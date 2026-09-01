@@ -12,8 +12,6 @@ services:
     container_name: cli-proxy-api
     # env_file:
     #   - .env
-    environment:
-      DEPLOY: ${DEPLOY:-}
     ports:
       - "8317:8317"
       - "8085:8085"
