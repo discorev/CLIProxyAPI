@@ -12,6 +12,7 @@ permissions:
 env:
   GH_REPO: ${{ github.repository }}
   GO_VERSION: '1.26.4'
+  MODELS_REPOSITORY_URL: https://github.com/discorev/ai-models.git
 
 jobs:
   prepare-release:

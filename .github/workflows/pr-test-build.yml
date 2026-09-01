@@ -6,6 +6,9 @@ on:
 permissions:
   contents: read
 
+env:
+  MODELS_REPOSITORY_URL: https://github.com/discorev/ai-models.git
+
 jobs:
   build:
     runs-on: ubuntu-latest
