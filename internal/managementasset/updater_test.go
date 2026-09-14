@@ -65,6 +65,52 @@ func TestFetchLatestAssetOmitsAuthorizationWithoutToken(t *testing.T) {
 	}
 }
 
+func TestResolveReleaseURL(t *testing.T) {
+	tests := []struct {
+		name string
+		repo string
+		want string
+	}{
+		{
+			name: "empty uses fork default",
+			want: defaultManagementReleaseURL,
+		},
+		{
+			name: "invalid uses fork default",
+			repo: "not-a-repository-url",
+			want: defaultManagementReleaseURL,
+		},
+		{
+			name: "fork repository",
+			repo: config.DefaultPanelGitHubRepository,
+			want: defaultManagementReleaseURL,
+		},
+		{
+			name: "legacy upstream repository migrates to fork",
+			repo: "https://github.com/router-for-me/Cli-Proxy-API-Management-Center",
+			want: defaultManagementReleaseURL,
+		},
+		{
+			name: "legacy upstream API migrates to fork",
+			repo: "https://api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center/releases/latest",
+			want: defaultManagementReleaseURL,
+		},
+		{
+			name: "custom repository remains custom",
+			repo: "https://github.com/example/custom-panel.git",
+			want: "https://api.github.com/repos/example/custom-panel/releases/latest",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveReleaseURL(tt.repo); got != tt.want {
+				t.Fatalf("resolveReleaseURL(%q) = %q, want %q", tt.repo, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAutoUpdateSkipReason(t *testing.T) {
 	tests := []struct {
 		name       string

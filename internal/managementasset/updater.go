@@ -26,8 +26,8 @@ import (
 )
 
 const (
-	defaultManagementReleaseURL  = "https://api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center/releases/latest"
-	defaultManagementFallbackURL = "https://cpamc.router-for.me/"
+	defaultManagementReleaseURL  = "https://api.github.com/repos/discorev/Cli-Proxy-API-Management-Center/releases/latest"
+	defaultManagementFallbackURL = "https://github.com/discorev/Cli-Proxy-API-Management-Center/releases/latest/download/management.html"
 	managementAssetName          = "management.html"
 	httpUserAgent                = "CLIProxyAPI-management-updater"
 	managementSyncMinInterval    = 30 * time.Second
@@ -322,8 +322,12 @@ func resolveReleaseURL(repo string) string {
 
 	host := strings.ToLower(parsed.Host)
 	parsed.Path = strings.TrimSuffix(parsed.Path, "/")
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 
 	if host == "api.github.com" {
+		if len(parts) >= 3 && strings.EqualFold(parts[0], "repos") && isLegacyManagementRepository(parts[1], parts[2]) {
+			return defaultManagementReleaseURL
+		}
 		if !strings.HasSuffix(strings.ToLower(parsed.Path), "/releases/latest") {
 			parsed.Path = parsed.Path + "/releases/latest"
 		}
@@ -331,14 +335,21 @@ func resolveReleaseURL(repo string) string {
 	}
 
 	if host == "github.com" {
-		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 		if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
 			repoName := strings.TrimSuffix(parts[1], ".git")
+			if isLegacyManagementRepository(parts[0], repoName) {
+				return defaultManagementReleaseURL
+			}
 			return fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", parts[0], repoName)
 		}
 	}
 
 	return defaultManagementReleaseURL
+}
+
+func isLegacyManagementRepository(owner string, repo string) bool {
+	return strings.EqualFold(owner, "router-for-me") &&
+		strings.EqualFold(strings.TrimSuffix(repo, ".git"), "Cli-Proxy-API-Management-Center")
 }
 
 func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL string) (*releaseAsset, string, error) {
