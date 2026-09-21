@@ -391,6 +391,34 @@ func withClaudeOAuthCredentialBetas(betas string, includeExtendedCacheTTL bool) 
 	return strings.Join(parts, ",")
 }
 
+// appendClaudeOAuthCredentialBetas is used by passthrough mode to append
+// oauth-2025-04-20 and, when requested, extended-cache-ttl-2025-04-11 to the end
+// of the caller's list without reordering or trimming anything the caller sent.
+// A beta the caller already declares is not appended again. If the caller sent
+// nothing, the result is just the appended betas.
+func appendClaudeOAuthCredentialBetas(betas string, includeExtendedCacheTTL bool) string {
+	present := make(map[string]bool)
+	for _, beta := range strings.Split(betas, ",") {
+		present[strings.TrimSpace(beta)] = true
+	}
+	result := betas
+	appendBeta := func(beta string) {
+		if present[beta] {
+			return
+		}
+		if result == "" {
+			result = beta
+		} else {
+			result += "," + beta
+		}
+	}
+	appendBeta(claudeOAuthBeta)
+	if includeExtendedCacheTTL {
+		appendBeta(claudeExtendedCacheTTLBeta)
+	}
+	return result
+}
+
 func withoutClaudeBeta(betas, removeBeta string) string {
 	parts := strings.Split(betas, ",")
 	res := make([]string, 0, len(parts))
@@ -827,6 +855,25 @@ func claudeCredentialUsesOAuth(auth *cliproxyauth.Auth, apiKey string) bool {
 	return !hasAPIKeyAttr
 }
 
+// applyClaudeUpstreamAuth applies the selected credential without changing any
+// caller-owned request headers beyond the two upstream authentication fields.
+func applyClaudeUpstreamAuth(headers http.Header, upstreamURL *url.URL, auth *cliproxyauth.Auth, apiKey string) {
+	credentialUsesBearer := claudeCredentialUsesOAuth(auth, apiKey)
+	useAPIKey := !credentialUsesBearer
+	if strings.TrimSpace(apiKey) != "" {
+		if isAnthropicUpstreamURL(upstreamURL) && useAPIKey {
+			headers.Del("Authorization")
+			headers.Set("x-api-key", apiKey)
+			return
+		}
+		headers.Del("x-api-key")
+		headers.Set("Authorization", "Bearer "+apiKey)
+		return
+	}
+	headers.Del("Authorization")
+	headers.Del("x-api-key")
+}
+
 func copyClaudeCallerFingerprintHeaders(dst, src http.Header) {
 	if dst == nil || src == nil {
 		return
@@ -897,26 +944,13 @@ func applyClaudeHeadersWithNativeProfile(
 	// Authentication and wire fingerprint are separate authorities. File-backed
 	// delegated providers still use Bearer auth, but only real Claude OAuth and
 	// explicit fingerprint-profile opt-ins receive the CLI wire profile.
-	credentialUsesBearer := claudeCredentialUsesOAuth(auth, apiKey)
-	useAPIKey := !credentialUsesBearer
 	fp := resolveClaudeFingerprintPolicy(cfg, auth, apiKey)
 	wirePolicy, _ := resolveClaudeWirePolicy(cfg, auth, apiKey, confirmedClaudeCode)
 	applyCLIFingerprint := fp.ProfileClaudeCodeCLI || wirePolicy.Cloak
 	preserveCallerFingerprint := !applyCLIFingerprint && !confirmedClaudeCode
 	useOAuthBetas := fp.UseOAuthBetas
 	isAnthropicBase := isAnthropicUpstreamURL(r.URL)
-	if strings.TrimSpace(apiKey) != "" {
-		if isAnthropicBase && useAPIKey {
-			r.Header.Del("Authorization")
-			r.Header.Set("x-api-key", apiKey)
-		} else {
-			r.Header.Del("x-api-key")
-			r.Header.Set("Authorization", "Bearer "+apiKey)
-		}
-	} else {
-		r.Header.Del("Authorization")
-		r.Header.Del("x-api-key")
-	}
+	applyClaudeUpstreamAuth(r.Header, r.URL, auth, apiKey)
 	r.Header.Set("Content-Type", "application/json")
 
 	if incomingHeaders == nil {

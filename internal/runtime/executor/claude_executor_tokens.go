@@ -141,87 +141,104 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	if fp.ProfileClaudeCodeCLI {
 		claudeSessionID = helps.ClaudeAgentSessionUUIDForRequest(incomingHeaders, originalPayload, req.Payload, confirmedClaudeCode, opts.Metadata, req.Metadata)
 	}
-	// Use streaming translation to preserve function calling, except for claude.
-	stream := from != to
-	body := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, stream, helps.APIKeyModelIsCompat(req))
-	body = helps.SetStringIfDifferent(body, "model", upstreamModel)
-	var errThinking error
-	body, errThinking = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier())
-	if errThinking != nil {
-		return cliproxyexecutor.Response{}, errThinking
-	}
-	if rebuildMidSystemMessageEnabled(e.cfg, auth) {
-		body = rebuildMidSystemMessagesToTopLevel(body)
-	}
+	var body []byte
+	var extraBetas []string
+	var cloaked bool
+	var passthroughHeaders http.Header
+	nativePassthrough := e.cfg != nil && e.cfg.ClaudeNativePassthrough && claudeCodeDetection.NativePassthrough
+	if nativePassthrough {
+		var errPassthrough error
+		body, passthroughHeaders, errPassthrough = e.prepareClaudeNativePassthroughRequest(
+			auth, apiKey, url, upstreamModel, originalPayload, incomingHeaders, claudeSessionID, true, false,
+		)
+		if errPassthrough != nil {
+			return cliproxyexecutor.Response{}, errPassthrough
+		}
+	} else {
+		// Use streaming translation to preserve function calling, except for claude.
+		stream := from != to
+		body = helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, stream, helps.APIKeyModelIsCompat(req))
+		body = helps.SetStringIfDifferent(body, "model", upstreamModel)
+		var errThinking error
+		body, errThinking = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier())
+		if errThinking != nil {
+			return cliproxyexecutor.Response{}, errThinking
+		}
+		if rebuildMidSystemMessageEnabled(e.cfg, auth) {
+			body = rebuildMidSystemMessagesToTopLevel(body)
+		}
 
-	directAnthropic := isAnthropicUpstreamBase(baseURL)
-	// Claude Code's count_tokens carries only model, messages and tools, so the
-	// full Messages cloaking must not run here for any origin. Apply the parts
-	// that still have to hold: relocate the caller's system prompt into messages
-	// so its tokens stay counted, and obfuscate sensitive words exactly like the
-	// Messages path. Kimi opt-in uses the same contract.
-	policy, settings := resolveClaudeWirePolicy(e.cfg, auth, apiKey, confirmedClaudeCode)
-	cloaked := policy.Cloak
-	if cloaked {
-		if !settings.strictMode {
-			if errSystem := validateClaudeCallerSystemBlocks(gjson.GetBytes(body, "system")); errSystem != nil {
-				return cliproxyexecutor.Response{}, errSystem
+		directAnthropic := isAnthropicUpstreamBase(baseURL)
+		// Claude Code's count_tokens carries only model, messages and tools, so the
+		// full Messages cloaking must not run here for any origin. Apply the parts
+		// that still have to hold: relocate the caller's system prompt into messages
+		// so its tokens stay counted, and obfuscate sensitive words exactly like the
+		// Messages path. Kimi opt-in uses the same contract.
+		policy, settings := resolveClaudeWirePolicy(e.cfg, auth, apiKey, confirmedClaudeCode)
+		cloaked = policy.Cloak
+		if cloaked {
+			if !settings.strictMode {
+				if errSystem := validateClaudeCallerSystemBlocks(gjson.GetBytes(body, "system")); errSystem != nil {
+					return cliproxyexecutor.Response{}, errSystem
+				}
+			}
+			body = relocateClaudeSystemPromptForCountTokens(body, settings.strictMode)
+			if len(settings.sensitiveWords) > 0 {
+				body = helps.ObfuscateSensitiveWords(body, helps.BuildSensitiveWordMatcher(settings.sensitiveWords))
 			}
 		}
-		body = relocateClaudeSystemPromptForCountTokens(body, settings.strictMode)
-		if len(settings.sensitiveWords) > 0 {
-			body = helps.ObfuscateSensitiveWords(body, helps.BuildSensitiveWordMatcher(settings.sensitiveWords))
+
+		// Keep count_tokens requests compatible with Anthropic cache-control constraints too.
+		body = enforceCacheControlLimit(body, 4)
+		body = normalizeCacheControlTTL(body)
+
+		// Extract betas from body and convert to header (for count_tokens too)
+		extraBetas, body = extractAndRemoveBetas(body)
+		// Claude Code 2.1.220's beta.messages.countTokens() always appends this beta.
+		extraBetas = append(extraBetas, claudeTokenCountingBeta)
+		if fp.MCPAlias && cloaked {
+			mcpAliases := resolveClaudeMCPAliasOptions(ctx)
+			body, _ = prepareClaudeOAuthToolNamesForUpstream(body, mcpAliases)
+		}
+		body = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, body, baseModel, helps.APIKeyModelIsCompat(req))
+		// Two different reasons converge on the same deletions, and they must stay
+		// separable.
+		//
+		// api.anthropic.com rejects these fields on count_tokens outright ("metadata:
+		// Extra inputs are not permitted"), so they have to go for every credential
+		// that lands there, opted in or not. That is upstream compatibility, not
+		// fingerprinting.
+		//
+		// Elsewhere (Kimi, delegated Anthropic Messages providers) the caller owns its
+		// body by default: a caller that deliberately sends context_management expects
+		// the token count to reflect it, so CPA must not silently rewrite the request.
+		// Only an explicit claude-code-cli profile aligns the shape, and then it aligns
+		// to the measured one: Claude Code 2.1.220 count_tokens carries exactly model,
+		// messages and tools, never a system block.
+		alignCLICountTokensShape := fp.ProfileClaudeCodeCLI
+		if directAnthropic || alignCLICountTokensShape {
+			body, _ = sjson.DeleteBytes(body, "metadata")
+			body, _ = sjson.DeleteBytes(body, "context_management")
+			body, _ = sjson.DeleteBytes(body, "diagnostics")
+		}
+		if alignCLICountTokensShape {
+			body = util.StripClaudeCodeAttributionSystem(body)
+		}
+		// Runs on the finished body: payload rules can rewrite model and messages
+		// long after translation, so an earlier check would not describe the request
+		// that is about to be sent.
+		if errMidSystem := validateClaudeMidSystemMessageModel(body, confirmedClaudeCode, directAnthropic); errMidSystem != nil {
+			return cliproxyexecutor.Response{}, errMidSystem
 		}
 	}
 
-	// Keep count_tokens requests compatible with Anthropic cache-control constraints too.
-	body = enforceCacheControlLimit(body, 4)
-	body = normalizeCacheControlTTL(body)
-
-	// Extract betas from body and convert to header (for count_tokens too)
-	var extraBetas []string
-	extraBetas, body = extractAndRemoveBetas(body)
-	// Claude Code 2.1.220's beta.messages.countTokens() always appends this beta.
-	extraBetas = append(extraBetas, claudeTokenCountingBeta)
-	if fp.MCPAlias && cloaked {
-		mcpAliases := resolveClaudeMCPAliasOptions(ctx)
-		body, _ = prepareClaudeOAuthToolNamesForUpstream(body, mcpAliases)
-	}
-	body = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, body, baseModel, helps.APIKeyModelIsCompat(req))
-	// Two different reasons converge on the same deletions, and they must stay
-	// separable.
-	//
-	// api.anthropic.com rejects these fields on count_tokens outright ("metadata:
-	// Extra inputs are not permitted"), so they have to go for every credential
-	// that lands there, opted in or not. That is upstream compatibility, not
-	// fingerprinting.
-	//
-	// Elsewhere (Kimi, delegated Anthropic Messages providers) the caller owns its
-	// body by default: a caller that deliberately sends context_management expects
-	// the token count to reflect it, so CPA must not silently rewrite the request.
-	// Only an explicit claude-code-cli profile aligns the shape, and then it aligns
-	// to the measured one: Claude Code 2.1.220 count_tokens carries exactly model,
-	// messages and tools, never a system block.
-	alignCLICountTokensShape := fp.ProfileClaudeCodeCLI
-	if directAnthropic || alignCLICountTokensShape {
-		body, _ = sjson.DeleteBytes(body, "metadata")
-		body, _ = sjson.DeleteBytes(body, "context_management")
-		body, _ = sjson.DeleteBytes(body, "diagnostics")
-	}
-	if alignCLICountTokensShape {
-		body = util.StripClaudeCodeAttributionSystem(body)
-	}
-	// Runs on the finished body: payload rules can rewrite model and messages
-	// long after translation, so an earlier check would not describe the request
-	// that is about to be sent.
-	if errMidSystem := validateClaudeMidSystemMessageModel(body, confirmedClaudeCode, directAnthropic); errMidSystem != nil {
-		return cliproxyexecutor.Response{}, errMidSystem
-	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
-	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, body, e.cfg, incomingHeaders, confirmedClaudeCode && !cloaked, claudeSessionID); errHeaders != nil {
+	if nativePassthrough {
+		httpReq.Header = passthroughHeaders
+	} else if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, body, e.cfg, incomingHeaders, confirmedClaudeCode && !cloaked, claudeSessionID); errHeaders != nil {
 		return cliproxyexecutor.Response{}, errHeaders
 	}
 	var authID, authLabel, authType, authValue string

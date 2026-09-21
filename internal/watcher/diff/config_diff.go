@@ -55,6 +55,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.DisableClaudeCloakMode != newCfg.DisableClaudeCloakMode {
 		changes = append(changes, fmt.Sprintf("disable-claude-cloak-mode: %t -> %t", oldCfg.DisableClaudeCloakMode, newCfg.DisableClaudeCloakMode))
 	}
+	if oldCfg.ClaudeNativePassthrough != newCfg.ClaudeNativePassthrough {
+		changes = append(changes, fmt.Sprintf("claude-native-passthrough: %t -> %t", oldCfg.ClaudeNativePassthrough, newCfg.ClaudeNativePassthrough))
+	}
 	if oldCfg.ClaudeCode.DisableCloakingModelList != newCfg.ClaudeCode.DisableCloakingModelList {
 		changes = append(changes, fmt.Sprintf("claude-code.disable-cloaking-model-list: %t -> %t", oldCfg.ClaudeCode.DisableCloakingModelList, newCfg.ClaudeCode.DisableCloakingModelList))
 	}

@@ -106,17 +106,18 @@ var measuredClaudeCodeHelperBetaProfiles = map[string]claudeCodeHelperShape{
 // subclient identity used to distinguish an official Claude Code request from
 // a client that only copied its User-Agent.
 type ClaudeCodeRequestDetection struct {
-	Confirmed       bool
-	StrongSignals   bool
-	NativeClient    bool
-	XAppCLI         bool
-	UserAgent       bool
-	BetasPresent    bool
-	MetadataUserID  bool
-	HelperProfile   bool
-	Entrypoint      string
-	Subclient       string
-	AgentSDKVersion string
+	Confirmed         bool
+	NativePassthrough bool
+	StrongSignals     bool
+	NativeClient      bool
+	XAppCLI           bool
+	UserAgent         bool
+	BetasPresent      bool
+	MetadataUserID    bool
+	HelperProfile     bool
+	Entrypoint        string
+	Subclient         string
+	AgentSDKVersion   string
 }
 
 // DetectClaudeCodeRequest first mirrors CCH's strong-signal contract, then
@@ -144,11 +145,27 @@ func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bo
 	metadataUserID := gjson.GetBytes(payload, "metadata.user_id")
 	detection.MetadataUserID = metadataUserID.Exists() && metadataUserID.Type == gjson.String && isValidUserID(metadataUserID.String())
 	detection.NativeClient = nativeClaudeEntrypoints[entrypoint]
+	detection.NativePassthrough = nativePassthroughEligible(userAgent, entrypoint, detection.XAppCLI, detection.MetadataUserID, countTokens, cfg)
 	standardSignals := detection.XAppCLI && detection.UserAgent && detection.BetasPresent && (countTokens || detection.MetadataUserID)
 	detection.HelperProfile = detection.NativeClient && matchesMeasuredClaudeCodeHelperProfile(headers, payload, countTokens, detection, cfg)
 	detection.StrongSignals = standardSignals || detection.HelperProfile
 	detection.Confirmed = detection.StrongSignals && detection.NativeClient
 	return detection
+}
+
+// nativePassthroughEligible accepts native Claude Code versions at or above the
+// configured device-profile baseline. The baseline is a forward-only floor: newer
+// patch, minor, and major versions remain eligible without a ceiling.
+func nativePassthroughEligible(userAgent, entrypoint string, xAppCLI, metadataUserID, countTokens bool, cfg *config.Config) bool {
+	if !xAppCLI || (!countTokens && !metadataUserID) || !nativeClaudeEntrypoints[entrypoint] {
+		return false
+	}
+	candidate, okCandidate := parseClaudeCLIVersion(userAgent)
+	baseline := defaultClaudeDeviceProfile(cfg)
+	if !okCandidate || !baseline.hasVersion {
+		return false
+	}
+	return candidate.Compare(baseline.version) >= 0
 }
 
 func claudeCodeHelperBetaProfile(redactThinking bool, trailing ...string) string {

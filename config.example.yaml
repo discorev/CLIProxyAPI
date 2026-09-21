@@ -202,6 +202,12 @@ transient-error-cooldown-seconds: 0
 # "auto" behavior (cloak only non-Claude-Code clients).
 disable-claude-cloak-mode: false
 
+# Genuine Claude Code requests are forwarded unchanged except for upstream authentication,
+# selected OAuth credential identity, and CCH signing. The minimum accepted client version is
+# claude-header-defaults.user-agent; newer patch, minor, and major versions are accepted.
+# Set false to restore the profile/cloak pipeline for Claude Code callers.
+claude-native-passthrough: true
+
 # Provider-wide Claude settings.
 claude:
   # When true, scope quota cooldowns to the requested model rather than cooling down

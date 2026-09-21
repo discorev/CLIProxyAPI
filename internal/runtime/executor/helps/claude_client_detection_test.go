@@ -531,3 +531,74 @@ func TestMeasuredHelperProfileIgnoresConfiguredStainlessTimeout(t *testing.T) {
 		}
 	})
 }
+
+func TestDetectClaudeCodeRequestNativePassthroughEligibility(t *testing.T) {
+	validPayload := claudeCodeDetectionPayload(validClaudeCodeMetadataUserID)
+	tests := []struct {
+		name        string
+		userAgent   string
+		xApp        string
+		payload     []byte
+		countTokens bool
+		want        bool
+	}{
+		{name: "at floor", userAgent: "claude-cli/2.1.258 (external, cli)", xApp: "cli", payload: validPayload, want: true},
+		{name: "newer patch", userAgent: "claude-cli/2.1.999 (external, cli)", xApp: "cli", payload: validPayload, want: true},
+		{name: "newer minor", userAgent: "claude-cli/2.2.0 (external, cli)", xApp: "cli", payload: validPayload, want: true},
+		{name: "newer major", userAgent: "claude-cli/3.0.0 (external, cli)", xApp: "cli", payload: validPayload, want: true},
+		{name: "forward-compatible trailing detail", userAgent: "claude-cli/2.2.0 (external, cli, agent-sdk/0.2.0, something-new)", xApp: "cli", payload: validPayload, want: true},
+		{name: "below floor", userAgent: "claude-cli/2.1.257 (external, cli)", xApp: "cli", payload: validPayload},
+		{name: "missing x-app", userAgent: "claude-cli/2.1.258 (external, cli)", payload: validPayload},
+		{name: "non-native entrypoint", userAgent: "claude-cli/2.1.258 (external, sdk-ts, agent-sdk/0.3.220)", xApp: "cli", payload: validPayload},
+		{name: "invalid metadata", userAgent: "claude-cli/2.1.258 (external, cli)", xApp: "cli", payload: claudeCodeDetectionPayload("invalid")},
+		{name: "missing metadata", userAgent: "claude-cli/2.1.258 (external, cli)", xApp: "cli", payload: []byte(`{"messages":[]}`)},
+		{name: "count tokens without metadata", userAgent: "claude-cli/2.1.258 (external, cli)", xApp: "cli", payload: []byte(`{"messages":[]}`), countTokens: true, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			headers := http.Header{"User-Agent": {test.userAgent}}
+			if test.xApp != "" {
+				headers.Set("X-App", test.xApp)
+			}
+			detection := DetectClaudeCodeRequest(headers, test.payload, test.countTokens)
+			if detection.NativePassthrough != test.want {
+				t.Fatalf("NativePassthrough = %t, want %t: %#v", detection.NativePassthrough, test.want, detection)
+			}
+		})
+	}
+}
+
+func TestDetectClaudeCodeRequestNativePassthroughUsesConfiguredVersionFloor(t *testing.T) {
+	payload := claudeCodeDetectionPayload(validClaudeCodeMetadataUserID)
+	cfg := &config.Config{ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{
+		UserAgent: "claude-cli/2.1.300 (external, cli)",
+	}}
+	for _, test := range []struct {
+		version string
+		want    bool
+	}{
+		{version: "2.1.280"},
+		{version: "2.1.300", want: true},
+	} {
+		t.Run(test.version, func(t *testing.T) {
+			headers := confirmedClaudeCodeHeaders()
+			headers.Set("User-Agent", "claude-cli/"+test.version+" (external, cli)")
+			detection := DetectClaudeCodeRequest(headers, payload, false, cfg)
+			if detection.NativePassthrough != test.want {
+				t.Fatalf("NativePassthrough = %t, want %t: %#v", detection.NativePassthrough, test.want, detection)
+			}
+		})
+	}
+}
+
+func TestDetectClaudeCodeRequestNativePassthroughAllowsTrailingUserAgentDetails(t *testing.T) {
+	headers := confirmedClaudeCodeHeaders()
+	headers.Set("User-Agent", "claude-cli/2.2.0 (external, cli, agent-sdk/0.2.0, something-new)")
+	detection := DetectClaudeCodeRequest(headers, claudeCodeDetectionPayload(validClaudeCodeMetadataUserID), false)
+	if !detection.NativePassthrough {
+		t.Fatalf("NativePassthrough = false, want true: %#v", detection)
+	}
+	if detection.Confirmed {
+		t.Fatalf("Confirmed = true, want existing strict confirmation behavior unchanged: %#v", detection)
+	}
+}

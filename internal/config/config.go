@@ -157,6 +157,11 @@ type Config struct {
 	// the auth/OAuth token file). Default false preserves the per-client "auto" behavior.
 	DisableClaudeCloakMode bool `yaml:"disable-claude-cloak-mode" json:"disable-claude-cloak-mode"`
 
+	// ClaudeNativePassthrough forwards genuine Claude Code requests without the
+	// normal profile and cloaking transformations, except for selected credential
+	// authentication, OAuth identity, and CCH signing. Default true.
+	ClaudeNativePassthrough bool `yaml:"claude-native-passthrough" json:"claude-native-passthrough"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
