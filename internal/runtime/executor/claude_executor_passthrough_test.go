@@ -383,7 +383,7 @@ func TestClaudeExecutorNativePassthroughDisabledUsesExistingPipeline(t *testing.
 	if errExecute != nil {
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
-	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.258 (external, cli)" {
+	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.280 (external, cli)" {
 		t.Fatalf("disabled passthrough User-Agent = %q, want baseline profile", got)
 	}
 }

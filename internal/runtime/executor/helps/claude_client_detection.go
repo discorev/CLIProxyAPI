@@ -60,12 +60,16 @@ var claudeCodeSubclientByEntrypoint = map[string]string{
 	"claude-coworker-terminal":  "claude-coworker-terminal",
 }
 
-// Only product surfaces with verified 2.1.220 wire behavior are eligible for
-// pass-through. Other first-party-looking entrypoints are cloaked until their
-// CPA-reachable request shape has been captured and reviewed.
+// Only product surfaces backed by the Claude Code binary are eligible for
+// pass-through. The Agent SDK entrypoints (sdk-ts, sdk-py) spawn the same
+// binary in stream-json mode, so their wire behavior matches the CLI. Other
+// first-party-looking entrypoints are cloaked until their CPA-reachable
+// request shape has been captured and reviewed.
 var nativeClaudeEntrypoints = map[string]bool{
 	"cli":           true,
 	"sdk-cli":       true,
+	"sdk-ts":        true,
+	"sdk-py":        true,
 	"claude-vscode": true,
 }
 

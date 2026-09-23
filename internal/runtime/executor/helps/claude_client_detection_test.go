@@ -139,8 +139,8 @@ func TestDetectClaudeCodeRequestClassifiesEntrypoints(t *testing.T) {
 		{name: "cli", userAgent: "claude-cli/2.1.280 (external, cli)", entrypoint: "cli", subclient: "claude-code-cli", native: true},
 		{name: "vscode-agent-sdk", userAgent: "claude-cli/2.1.280 (external, claude-vscode, agent-sdk/0.3.220)", entrypoint: "claude-vscode", subclient: "claude-code-vscode", agentSDKVersion: "0.3.220", native: true},
 		{name: "sdk-cli", userAgent: "claude-cli/2.1.280 (external, sdk-cli)", entrypoint: "sdk-cli", subclient: "claude-code-cli-sdk", native: true},
-		{name: "sdk-ts", userAgent: "claude-cli/2.1.280 (external, sdk-ts, agent-sdk/0.3.220)", entrypoint: "sdk-ts", subclient: "claude-code-sdk-ts", agentSDKVersion: "0.3.220"},
-		{name: "sdk-py", userAgent: "claude-cli/2.1.280 (external, sdk-py, agent-sdk/0.1.0)", entrypoint: "sdk-py", subclient: "claude-code-sdk-py", agentSDKVersion: "0.1.0"},
+		{name: "sdk-ts", userAgent: "claude-cli/2.1.280 (external, sdk-ts, agent-sdk/0.3.220)", entrypoint: "sdk-ts", subclient: "claude-code-sdk-ts", agentSDKVersion: "0.3.220", native: true},
+		{name: "sdk-py", userAgent: "claude-cli/2.1.280 (external, sdk-py, agent-sdk/0.1.0)", entrypoint: "sdk-py", subclient: "claude-code-sdk-py", agentSDKVersion: "0.1.0", native: true},
 		{name: "desktop", userAgent: "claude-cli/2.1.280 (external, claude-desktop)", entrypoint: "claude-desktop", subclient: "claude-desktop"},
 		{name: "desktop-third-party-inference", userAgent: "claude-cli/2.1.280 (external, claude-desktop-3p)", entrypoint: "claude-desktop-3p", subclient: "claude-desktop-3p"},
 		{name: "remote", userAgent: "claude-cli/2.1.280 (external, remote)", entrypoint: "remote", subclient: "claude-remote"},
@@ -542,17 +542,17 @@ func TestDetectClaudeCodeRequestNativePassthroughEligibility(t *testing.T) {
 		countTokens bool
 		want        bool
 	}{
-		{name: "at floor", userAgent: "claude-cli/2.1.258 (external, cli)", xApp: "cli", payload: validPayload, want: true},
+		{name: "at floor", userAgent: "claude-cli/2.1.280 (external, cli)", xApp: "cli", payload: validPayload, want: true},
 		{name: "newer patch", userAgent: "claude-cli/2.1.999 (external, cli)", xApp: "cli", payload: validPayload, want: true},
 		{name: "newer minor", userAgent: "claude-cli/2.2.0 (external, cli)", xApp: "cli", payload: validPayload, want: true},
 		{name: "newer major", userAgent: "claude-cli/3.0.0 (external, cli)", xApp: "cli", payload: validPayload, want: true},
 		{name: "forward-compatible trailing detail", userAgent: "claude-cli/2.2.0 (external, cli, agent-sdk/0.2.0, something-new)", xApp: "cli", payload: validPayload, want: true},
-		{name: "below floor", userAgent: "claude-cli/2.1.257 (external, cli)", xApp: "cli", payload: validPayload},
-		{name: "missing x-app", userAgent: "claude-cli/2.1.258 (external, cli)", payload: validPayload},
-		{name: "non-native entrypoint", userAgent: "claude-cli/2.1.258 (external, sdk-ts, agent-sdk/0.3.220)", xApp: "cli", payload: validPayload},
-		{name: "invalid metadata", userAgent: "claude-cli/2.1.258 (external, cli)", xApp: "cli", payload: claudeCodeDetectionPayload("invalid")},
-		{name: "missing metadata", userAgent: "claude-cli/2.1.258 (external, cli)", xApp: "cli", payload: []byte(`{"messages":[]}`)},
-		{name: "count tokens without metadata", userAgent: "claude-cli/2.1.258 (external, cli)", xApp: "cli", payload: []byte(`{"messages":[]}`), countTokens: true, want: true},
+		{name: "below floor", userAgent: "claude-cli/2.1.279 (external, cli)", xApp: "cli", payload: validPayload},
+		{name: "missing x-app", userAgent: "claude-cli/2.1.280 (external, cli)", payload: validPayload},
+		{name: "non-native entrypoint", userAgent: "claude-cli/2.1.280 (external, claude-desktop)", xApp: "cli", payload: validPayload},
+		{name: "invalid metadata", userAgent: "claude-cli/2.1.280 (external, cli)", xApp: "cli", payload: claudeCodeDetectionPayload("invalid")},
+		{name: "missing metadata", userAgent: "claude-cli/2.1.280 (external, cli)", xApp: "cli", payload: []byte(`{"messages":[]}`)},
+		{name: "count tokens without metadata", userAgent: "claude-cli/2.1.280 (external, cli)", xApp: "cli", payload: []byte(`{"messages":[]}`), countTokens: true, want: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
