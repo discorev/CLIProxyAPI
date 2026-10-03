@@ -2,12 +2,14 @@ package auth
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 func TestIntelligentFillSelector(t *testing.T) {
@@ -107,4 +109,95 @@ func TestIntelligentFillLegacyPickResolvesAliasesWithoutRecheckingCooldowns(t *t
 	if err != nil || got == nil || got.ID != "if-legacy-b" {
 		t.Fatalf("legacy Pick = %+v, %v; want if-legacy-b", got, err)
 	}
+}
+
+func TestIntelligentFillSelectorLogsRoutingChanges(t *testing.T) {
+	hook := setupTestLoggerHook(t)
+	log.SetLevel(log.InfoLevel)
+	now := time.Unix(1800000000, 0).UTC()
+	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339) }
+	manager := NewManager(nil, nil, nil)
+	manager.usage.now = func() time.Time { return now }
+	weeklyA := UsageWindow{Kind: "7d", UsedPercent: 10, ResetsAt: now.Add(time.Hour), Length: 604800}
+	weeklyB := UsageWindow{Kind: "7d", UsedPercent: 10, ResetsAt: now.Add(2 * time.Hour), Length: 604800}
+	setWindows := func(id string, windows ...UsageWindow) {
+		manager.usage.mu.Lock()
+		manager.usage.entries[id] = &usageEntry{CredentialUsage: CredentialUsage{Windows: windows}}
+		manager.usage.mu.Unlock()
+	}
+	manager.usage.entries = map[string]*usageEntry{}
+	setWindows("a", weeklyA)
+	setWindows("b", weeklyB)
+	selector := NewIntelligentFillSelector(manager)
+	auths := []*Auth{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+	routingLogs := func() []*log.Entry {
+		var entries []*log.Entry
+		for _, entry := range hook.AllEntries() {
+			if entry.Message == "intelligent-fill routing changed" {
+				entries = append(entries, entry)
+			}
+		}
+		hook.Reset()
+		return entries
+	}
+	pick := func(model, want string, wantLog log.Fields) {
+		t.Helper()
+		got, err := selector.Pick(context.Background(), "claude", model, cliproxyexecutor.Options{}, auths)
+		if err != nil || got == nil || got.ID != want {
+			t.Fatalf("Pick = %+v, %v; want %s", got, err, want)
+		}
+		logs := routingLogs()
+		if wantLog == nil {
+			if len(logs) != 0 {
+				t.Fatalf("unexpected routing log: %+v", logs[0].Data)
+			}
+			return
+		}
+		if len(logs) != 1 || logs[0].Level != log.InfoLevel || !reflect.DeepEqual(logs[0].Data, wantLog) {
+			var data []log.Fields
+			for _, entry := range logs {
+				data = append(data, entry.Data)
+			}
+			t.Fatalf("routing logs = %+v, want %v", data, wantLog)
+		}
+	}
+
+	// First pick after start logs; c has never been fetched.
+	pick("claude-sonnet-4(high)", "a", log.Fields{
+		"provider": "claude", "model": "claude-sonnet-4", "auth_id": "a", "previous_auth_id": "",
+		"weekly_reset": at(time.Hour), "skipped": "c: no usage data",
+	})
+	// Unchanged picks never log, including for the same canonical model.
+	pick("claude-sonnet-4", "a", nil)
+	pick("claude-sonnet-4(low)", "a", nil)
+
+	setWindows("c", weeklyB)
+	setWindows("a", weeklyA, UsageWindow{Kind: "5h", UsedPercent: 100, ResetsAt: now.Add(30 * time.Minute), Length: 18000})
+	pick("claude-sonnet-4", "b", log.Fields{
+		"provider": "claude", "model": "claude-sonnet-4", "auth_id": "b", "previous_auth_id": "a",
+		"weekly_reset": at(2 * time.Hour), "skipped": "a: 5h exhausted until " + at(30*time.Minute),
+	})
+
+	// Each model key is tracked independently; the fable scope gates only Fable.
+	setWindows("a", weeklyA)
+	setWindows("b", weeklyB, UsageWindow{Kind: "7d", Scope: "fable", UsedPercent: 100, ResetsAt: now.Add(2 * time.Hour), Length: 604800})
+	setWindows("c", UsageWindow{Kind: "7d", UsedPercent: 10, ResetsAt: now.Add(3 * time.Hour), Length: 604800})
+	setWindows("a", weeklyA, UsageWindow{Kind: "7d", Scope: "fable", UsedPercent: 100, ResetsAt: now.Add(time.Hour), Length: 604800})
+	pick("claude-fable-5", "c", log.Fields{
+		"provider": "claude", "model": "claude-fable-5", "auth_id": "c", "previous_auth_id": "",
+		"weekly_reset": at(3 * time.Hour),
+		"skipped":      "a: fable exhausted until " + at(time.Hour) + "; b: fable exhausted until " + at(2*time.Hour),
+	})
+	pick("claude-sonnet-4", "a", log.Fields{
+		"provider": "claude", "model": "claude-sonnet-4", "auth_id": "a", "previous_auth_id": "b",
+		"weekly_reset": at(time.Hour),
+	})
+
+	// All gated: the soonest reset is used as an advisory fallback.
+	setWindows("c", UsageWindow{Kind: "7d", Scope: "fable", UsedPercent: 100, ResetsAt: now.Add(3 * time.Hour), Length: 604800}, UsageWindow{Kind: "7d", UsedPercent: 10, ResetsAt: now.Add(3 * time.Hour), Length: 604800})
+	pick("claude-fable-5", "a", log.Fields{
+		"provider": "claude", "model": "claude-fable-5", "auth_id": "a", "previous_auth_id": "c",
+		"weekly_reset": at(time.Hour), "fallback": true,
+	})
+	pick("claude-fable-5", "a", nil)
 }

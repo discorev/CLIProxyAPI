@@ -218,6 +218,6 @@ func (m *Manager) refreshAfterReset(ctx context.Context, auth *Auth, attempted t
 	if !m.resetAuthCurrent(auth, false) {
 		return m.UsageSnapshot(auth.ID)
 	}
-	entry, _ := m.RefreshUsage(ctx, auth.ID)
+	entry, _ := m.refreshUsage(ctx, auth.ID, "reset")
 	return entry
 }

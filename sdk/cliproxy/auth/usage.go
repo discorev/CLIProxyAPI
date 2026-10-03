@@ -8,8 +8,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	log "github.com/sirupsen/logrus"
 )
 
 // UsageWindow is a subscription limit. Length is expressed in seconds.
@@ -78,6 +76,7 @@ type usageEntry struct {
 }
 
 type usageFlight struct {
+	trigger   string
 	startedAt time.Time
 	done      chan struct{}
 	snapshot  CredentialUsage
@@ -162,52 +161,17 @@ func (m *Manager) UsageSnapshot(id string) CredentialUsage {
 	return emptyCredentialUsage()
 }
 
-// usageAccountChanged compares account metadata, not rotating access tokens.
-func usageAccountChanged(previous, current *Auth) bool {
-	if previous == nil || current == nil {
-		return false
-	}
-	provider := strings.ToLower(strings.TrimSpace(previous.Provider))
-	if provider != strings.ToLower(strings.TrimSpace(current.Provider)) {
-		return true
-	}
-	var keys []string
-	switch provider {
-	case "claude":
-		keys = []string{"email", "account_uuid", "organization_uuid"}
-	case "codex":
-		keys = []string{"account_id", "email"}
-	default:
-		return false
-	}
-	for _, key := range keys {
-		before, _ := previous.Metadata[key].(string)
-		after, _ := current.Metadata[key].(string)
-		if strings.TrimSpace(before) != strings.TrimSpace(after) {
-			return true
-		}
-	}
-	return false
-}
-
-// removeUsageLocked is called under m.mu, matching refresh/header lock ordering.
-func (m *Manager) removeUsageLocked(id string) {
-	m.usage.mu.Lock()
-	delete(m.usage.entries, id)
-	delete(m.usage.flights, id)
-	if state := m.usage.resets[id]; state != nil && !state.inFlight {
-		delete(m.usage.resets, id)
-	}
-	m.usage.mu.Unlock()
-}
-
 // RefreshUsage shares one fetch per credential, independent of caller cancellation.
 // Each caller, including the one starting the fetch, can cancel its own wait.
 func (m *Manager) RefreshUsage(ctx context.Context, authID string) (CredentialUsage, error) {
+	return m.refreshUsage(ctx, authID, "manual")
+}
+
+func (m *Manager) refreshUsage(ctx context.Context, authID, trigger string) (CredentialUsage, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	flight, auth, fetcher, leader, err := m.beginUsageRefresh(authID, false)
+	flight, auth, fetcher, leader, err := m.beginUsageRefresh(authID, trigger)
 	if err != nil {
 		return emptyCredentialUsage(), err
 	}
@@ -225,7 +189,7 @@ func (m *Manager) RefreshUsage(ctx context.Context, authID string) (CredentialUs
 	}
 }
 
-func (m *Manager) beginUsageRefresh(id string, sweep bool) (*usageFlight, *Auth, UsageFetcher, bool, error) {
+func (m *Manager) beginUsageRefresh(id, trigger string) (*usageFlight, *Auth, UsageFetcher, bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	auth := m.auths[id]
@@ -248,14 +212,17 @@ func (m *Manager) beginUsageRefresh(id string, sweep bool) (*usageFlight, *Auth,
 	if usageFetchBlocked(entry, auth, m.usage.timeNow()) {
 		return nil, nil, nil, false, nil
 	}
-	if sweep && (auth.Disabled || auth.Status == StatusDisabled || !usageRefreshDue(entry, m.usage.timeNow())) {
-		return nil, nil, nil, false, nil
+	if trigger == "sweep" {
+		trigger = usageRefreshTrigger(entry, m.usage.timeNow())
+		if auth.Disabled || auth.Status == StatusDisabled || trigger == "" {
+			return nil, nil, nil, false, nil
+		}
 	}
 	if m.usage.entries == nil {
 		m.usage.entries = make(map[string]*usageEntry)
 		m.usage.flights = make(map[string]*usageFlight)
 	}
-	flight := &usageFlight{done: make(chan struct{}), startedAt: m.usage.timeNow()}
+	flight := &usageFlight{done: make(chan struct{}), startedAt: m.usage.timeNow(), trigger: trigger}
 	m.usage.flights[id] = flight
 	next := cloneUsageEntry(entry)
 	next.Refreshing = true
@@ -278,9 +245,6 @@ func (m *Manager) fetchUsage(ctx context.Context, auth *Auth, fetcher UsageFetch
 	result, errFetch := fetcher.FetchUsage(ctx, auth)
 	finished := m.usage.timeNow()
 	canceled := errFetch != nil && (ctx.Err() != nil || errors.Is(errFetch, context.Canceled))
-	if !canceled && (errFetch != nil || result.LastError != "") {
-		log.WithField("auth_id", auth.ID).Debug("subscription usage refresh failed")
-	}
 	m.usage.mu.Lock()
 	next := cloneUsageEntry(m.usage.entries[auth.ID])
 	next.Refreshing = false
@@ -327,9 +291,15 @@ func (m *Manager) fetchUsage(ctx context.Context, auth *Auth, fetcher UsageFetch
 	}
 	// Removal invalidates a flight. A late response cannot resurrect the entry
 	// or overwrite a new credential registered under the same ID.
-	if m.usage.flights[auth.ID] == flight {
+	stored := m.usage.flights[auth.ID] == flight
+	if stored {
 		m.usage.entries[auth.ID] = next
 		delete(m.usage.flights, auth.ID)
+		if !canceled {
+			// Log before publishing completion or permitting invalidation so the
+			// lifecycle lines follow the order of cache mutations.
+			logUsageFetch(auth, flight.trigger, next, errFetch)
+		}
 	}
 	flight.snapshot = next.CredentialUsage
 	flight.err = errFetch

@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 func TestUsageRateSharedFetchFloor(t *testing.T) {
@@ -197,5 +200,47 @@ func TestResetPostAttemptFloorRetainsSafetyLock(t *testing.T) {
 	_, _ = manager.RefreshUsage(context.Background(), "a")
 	if resetLocked(manager.usage.resets["a"], manager.usageSnapshot("a"), clock.now()) {
 		t.Fatal("fresh later fetch did not unlock")
+	}
+}
+
+func TestUsageRate429LogsCooldownOnce(t *testing.T) {
+	hook := setupTestLoggerHook(t)
+	log.SetLevel(log.InfoLevel)
+	manager, executor, clock := setupResetManager(t, "codex")
+	registerUsageAuth(t, manager, "a", "codex")
+	limited := true
+	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+		if limited {
+			return UsageFetchResult{}, &UsageHTTPError{StatusCode: 429}
+		}
+		return UsageFetchResult{}, nil
+	}
+	rateLimitLogs := func() []*log.Entry {
+		var entries []*log.Entry
+		for _, entry := range hook.AllEntries() {
+			if entry.Message == "usage fetch rate-limited" {
+				entries = append(entries, entry)
+			}
+		}
+		return entries
+	}
+	entry, _ := manager.RefreshUsage(context.Background(), "a")
+	// Requests during the cooldown are served from cache and must not log again.
+	clock.advance(time.Minute)
+	if _, err := manager.RefreshUsage(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	logs := rateLimitLogs()
+	want := log.Fields{"auth_id": "a", "provider": "codex", "cooldown_until": entry.CooldownUntil.UTC().Format(time.RFC3339)}
+	if len(logs) != 1 || logs[0].Level != log.InfoLevel || !reflect.DeepEqual(logs[0].Data, want) {
+		t.Fatalf("rate-limit logs = %+v, want one with %v", logs, want)
+	}
+	clock.advance(UsageCodex429Initial)
+	limited = false
+	if _, err := manager.RefreshUsage(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(rateLimitLogs()); got != 1 {
+		t.Fatalf("successful fetch logged rate limit: %d", got)
 	}
 }

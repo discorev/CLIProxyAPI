@@ -182,7 +182,8 @@ func TestUsageRefreshDue(t *testing.T) {
 		{"backoff", &usageEntry{retryAt: now.Add(time.Minute)}, false},
 		{"stale", &usageEntry{CredentialUsage: CredentialUsage{FetchedAt: now.Add(-15 * time.Minute)}}, true},
 		{"recent fetch", &usageEntry{CredentialUsage: CredentialUsage{FetchedAt: now.Add(-time.Minute)}}, false},
-		{"recent observation", &usageEntry{CredentialUsage: CredentialUsage{FetchedAt: now.Add(-time.Hour), ObservedAt: now.Add(-time.Minute)}}, false},
+		{"recent observation does not defer stale fetch", &usageEntry{CredentialUsage: CredentialUsage{FetchedAt: now.Add(-15 * time.Minute), ObservedAt: now}}, true},
+		{"recent fetch despite old observation", &usageEntry{CredentialUsage: CredentialUsage{FetchedAt: now.Add(-14 * time.Minute), ObservedAt: now.Add(-time.Hour)}}, false},
 		{"header only", &usageEntry{CredentialUsage: CredentialUsage{Windows: []UsageWindow{{Kind: "7d"}}, ObservedAt: now}}, true},
 		{"header only in backoff", &usageEntry{CredentialUsage: CredentialUsage{Windows: []UsageWindow{{Kind: "7d"}}, ObservedAt: now}, retryAt: now.Add(time.Minute)}, false},
 		{"retry despite fresh headers", &usageEntry{CredentialUsage: CredentialUsage{FetchedAt: now.Add(-time.Minute), ObservedAt: now}, retryAt: now}, true},
@@ -253,6 +254,42 @@ func TestUsageSweepClockAndLifecycle(t *testing.T) {
 	})
 }
 
+func TestUsageSweepRefetchesActiveCredentialDespiteHeaders(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		manager := NewManager(nil, nil, nil)
+		now := time.Unix(1800000000, 0)
+		manager.usage.now = func() time.Time { return now }
+		ticker := &fakeUsageTicker{ticks: make(chan time.Time), stopped: make(chan struct{})}
+		manager.usage.newTicker = func() usageTicker { return ticker }
+		auth := registerUsageAuth(t, manager, "active", "claude")
+		var calls atomic.Int32
+		manager.RegisterExecutor(&fakeUsageExecutor{provider: "claude", fetch: func(context.Context, *Auth) (UsageFetchResult, error) {
+			calls.Add(1)
+			return UsageFetchResult{Raw: map[string]json.RawMessage{"usage": json.RawMessage(`{}`)}}, nil
+		}})
+		manager.StartUsageSweep()
+		defer manager.StopUsageSweep()
+		synctest.Wait()
+		// Proxied traffic observes headers every minute; the raw body must
+		// still be re-fetched once the last successful fetch is 15 minutes old.
+		for minute := 1; minute <= 15; minute++ {
+			now = now.Add(time.Minute)
+			manager.mu.Lock()
+			manager.observeUsageHeadersLocked(auth, http.Header{"Anthropic-Ratelimit-Unified-5h-Utilization": {"0.1"}}, now)
+			manager.mu.Unlock()
+			ticker.ticks <- now
+			synctest.Wait()
+			want := int32(1)
+			if minute == 15 {
+				want = 2
+			}
+			if got := calls.Load(); got != want {
+				t.Fatalf("minute %d: fetches = %d, want %d", minute, got, want)
+			}
+		}
+	})
+}
+
 func TestUsageRefreshRespectsFloorAtSameClockTick(t *testing.T) {
 	manager := NewManager(nil, nil, nil)
 	registerUsageAuth(t, manager, "a", "claude")
@@ -288,7 +325,7 @@ func TestUsageCanceledFetchRemainsDueAfterFloor(t *testing.T) {
 			}})
 			manager.usage.entries = map[string]*usageEntry{"a": {CredentialUsage: CredentialUsage{LastError: previousError}}}
 			manager.usage.flights = make(map[string]*usageFlight)
-			flight, auth, fetcher, leader, err := manager.beginUsageRefresh("a", true)
+			flight, auth, fetcher, leader, err := manager.beginUsageRefresh("a", "sweep")
 			if err != nil || !leader {
 				t.Fatalf("begin refresh = %v, %v", leader, err)
 			}

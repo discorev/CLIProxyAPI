@@ -3,29 +3,45 @@ package auth
 import (
 	"context"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
+// usageIdleRefreshInterval re-fetches raw usage bodies even while proxied
+// traffic keeps header-derived windows fresh.
+const usageIdleRefreshInterval = 15 * time.Minute
+
 func usageRefreshDue(entry *usageEntry, now time.Time) bool {
+	return usageRefreshTrigger(entry, now) != ""
+}
+
+// usageRefreshTrigger is shared by scheduling and logging, so the reported
+// trigger describes the condition that actually made a sweep fetch due.
+func usageRefreshTrigger(entry *usageEntry, now time.Time) string {
 	if entry == nil {
-		return true
+		return "initial"
 	}
 	if entry.Refreshing || now.Before(entry.NextFetchAt) || now.Before(entry.retryAt) {
-		return false
+		return ""
 	}
 	// An elapsed retry is due even if traffic keeps header observations fresh.
-	if entry.FetchedAt.IsZero() || entry.waitForToken || !entry.retryAt.IsZero() {
-		return true
+	if entry.waitForToken || !entry.retryAt.IsZero() {
+		return "retry"
+	}
+	if entry.FetchedAt.IsZero() {
+		return "initial"
 	}
 	for _, window := range entry.Windows {
 		if !window.ResetsAt.IsZero() && !window.ResetsAt.After(now) && window.ResetsAt.After(entry.FetchedAt) {
-			return true
+			return "reset_passed"
 		}
 	}
-	freshest := entry.FetchedAt
-	if entry.ObservedAt.After(freshest) {
-		freshest = entry.ObservedAt
+	// Header observations refresh windows but not the raw bodies (plan,
+	// credits, grants), so only a successful fetch defers the idle refresh.
+	if !now.Before(entry.FetchedAt.Add(usageIdleRefreshInterval)) {
+		return "idle"
 	}
-	return !now.Before(freshest.Add(15 * time.Minute))
+	return ""
 }
 
 // StartUsageSweep starts the routing-only refresh loop. It is idempotent and
@@ -44,6 +60,7 @@ func (m *Manager) StartUsageSweep() {
 	} else {
 		ticker = realUsageTicker{time.NewTicker(time.Minute)}
 	}
+	log.Info("usage sweep started")
 	go func() {
 		defer ticker.Stop()
 		m.sweepUsage(ctx)
@@ -68,6 +85,7 @@ func (m *Manager) StopUsageSweep() {
 	if m.usage.cancel != nil {
 		m.usage.cancel()
 		m.usage.cancel = nil
+		log.WithField("reason", "stop_requested").Info("usage sweep stopped")
 	}
 }
 
@@ -86,7 +104,7 @@ func (m *Manager) sweepUsage(ctx context.Context) {
 		if !UsageFetchable(auth) || auth.Disabled || auth.Status == StatusDisabled {
 			continue
 		}
-		flight, current, fetcher, leader, err := m.beginUsageRefresh(auth.ID, true)
+		flight, current, fetcher, leader, err := m.beginUsageRefresh(auth.ID, "sweep")
 		if err == nil && leader {
 			// Each credential has its own flight: a hung upstream cannot stall
 			// the sweep or repeatedly spawn workers for that credential.

@@ -103,7 +103,7 @@ func (m *Manager) sweepResets(ctx context.Context) {
 			allClaudeExhausted = false
 		}
 		if due {
-			flight, current, fetcher, leader, err := m.beginUsageRefresh(auth.ID, false)
+			flight, current, fetcher, leader, err := m.beginUsageRefresh(auth.ID, "reset_loop")
 			if err == nil && leader {
 				go m.fetchUsage(context.WithoutCancel(ctx), current, fetcher, flight)
 			}

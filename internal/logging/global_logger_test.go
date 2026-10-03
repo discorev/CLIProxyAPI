@@ -345,3 +345,77 @@ func TestLogFormatterPrintsResetAttemptFields(t *testing.T) {
 		t.Fatalf("formatted=%q want=%q", formatted, want)
 	}
 }
+
+func TestLogFormatterPrintsIntelligentFillRoutingFields(t *testing.T) {
+	entry := log.NewEntry(log.New())
+	entry.Time = time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	entry.Level = log.InfoLevel
+	entry.Message = "intelligent-fill routing changed"
+	entry.Data = log.Fields{
+		"provider": "claude", "model": "claude-fable-5", "auth_id": "b", "previous_auth_id": "a",
+		"weekly_reset": "2026-10-04T00:00:00Z", "fallback": true,
+		"skipped": "a: 5h exhausted until 2026-10-02T13:00:00Z; c: no usage data",
+	}
+	formatted, err := (&LogFormatter{}).Format(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[2026-10-02 12:00:00] [--------] [info ] intelligent-fill routing changed provider=claude model=claude-fable-5 auth_id=\"b\" previous_auth_id=\"a\" weekly_reset=2026-10-04T00:00:00Z fallback=true skipped=\"a: 5h exhausted until 2026-10-02T13:00:00Z; c: no usage data\"\n"
+	if string(formatted) != want {
+		t.Fatalf("formatted=%q want=%q", formatted, want)
+	}
+}
+
+func TestLogFormatterPrintsUsageRateLimitFields(t *testing.T) {
+	entry := log.NewEntry(log.New())
+	entry.Time = time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	entry.Level = log.InfoLevel
+	entry.Message = "usage fetch rate-limited"
+	entry.Data = log.Fields{"auth_id": "a", "provider": "codex", "cooldown_until": "2026-10-02T12:05:00Z"}
+	formatted, err := (&LogFormatter{}).Format(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[2026-10-02 12:00:00] [--------] [info ] usage fetch rate-limited provider=codex auth_id=\"a\" cooldown_until=2026-10-02T12:05:00Z\n"
+	if string(formatted) != want {
+		t.Fatalf("formatted=%q want=%q", formatted, want)
+	}
+}
+
+func TestLogFormatterPrintsUsageLifecycleFields(t *testing.T) {
+	for _, tt := range []struct {
+		message string
+		fields  log.Fields
+		want    string
+	}{
+		{"usage fetched", log.Fields{"provider": "codex", "auth_id": "a", "trigger": "initial", "windows": 2, "summary": "7d=1%@2026-10-10T00:08Z, 5h=12.5%@unknown"},
+			`usage fetched provider=codex auth_id="a" trigger=initial windows=2 summary="7d=1%@2026-10-10T00:08Z, 5h=12.5%@unknown"`},
+		{"usage fetch failed", log.Fields{"provider": "codex", "auth_id": "a", "trigger": "retry", "error": "codex usage: upstream status 503", "retry_at": "2026-10-03T09:38:00Z"},
+			`usage fetch failed provider=codex error=codex usage: upstream status 503 auth_id="a" trigger=retry retry_at=2026-10-03T09:38:00Z`},
+		{"usage cache cleared", log.Fields{"provider": "codex", "auth_id": "a", "reason": "identity_changed", "identity_changes": "account_id: <empty> -> <set>, email: <set> -> <changed>"},
+			`usage cache cleared provider=codex auth_id="a" reason="identity_changed" identity_changes="account_id: <empty> -> <set>, email: <set> -> <changed>"`},
+		{"usage cache cleared", log.Fields{"provider": "codex", "auth_id": "a", "reason": "removed"},
+			`usage cache cleared provider=codex auth_id="a" reason="removed"`},
+		{"usage cache cleared", log.Fields{"provider": "codex", "auth_id": "a", "reason": "provider_changed"},
+			`usage cache cleared provider=codex auth_id="a" reason="provider_changed"`},
+		{"usage sweep started", log.Fields{}, `usage sweep started`},
+		{"usage sweep stopped", log.Fields{"reason": "stop_requested"}, `usage sweep stopped reason="stop_requested"`},
+	} {
+		t.Run(tt.message+"/"+tt.want, func(t *testing.T) {
+			entry := log.NewEntry(log.New())
+			entry.Time = time.Date(2026, 10, 3, 9, 23, 0, 0, time.UTC)
+			entry.Level = log.InfoLevel
+			entry.Message, entry.Data = tt.message, tt.fields
+			entry.Data["access_token"] = "must-not-log"
+			entry.Data["raw"] = "must-not-log"
+			formatted, err := (&LogFormatter{}).Format(entry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "[2026-10-03 09:23:00] [--------] [info ] " + tt.want + "\n"
+			if string(formatted) != want {
+				t.Fatalf("formatted=%q want=%q", formatted, want)
+			}
+		})
+	}
+}
