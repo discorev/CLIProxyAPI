@@ -390,6 +390,8 @@ func TestLogFormatterPrintsUsageLifecycleFields(t *testing.T) {
 	}{
 		{"usage fetched", log.Fields{"provider": "codex", "auth_id": "a", "trigger": "initial", "windows": 2, "summary": "7d=1%@2026-10-10T00:08Z, 5h=12.5%@unknown"},
 			`usage fetched provider=codex auth_id="a" trigger=initial windows=2 summary="7d=1%@2026-10-10T00:08Z, 5h=12.5%@unknown"`},
+		{"usage fetch abandoned", log.Fields{"provider": "codex", "auth_id": "a", "started_at": "2026-10-03T09:23:00Z"},
+			`usage fetch abandoned provider=codex auth_id="a" started_at=2026-10-03T09:23:00Z`},
 		{"usage fetch failed", log.Fields{"provider": "codex", "auth_id": "a", "trigger": "retry", "error": "codex usage: upstream status 503", "retry_at": "2026-10-03T09:38:00Z"},
 			`usage fetch failed provider=codex error=codex usage: upstream status 503 auth_id="a" trigger=retry retry_at=2026-10-03T09:38:00Z`},
 		{"usage cache cleared", log.Fields{"provider": "codex", "auth_id": "a", "reason": "identity_changed", "identity_changes": "account_id: <empty> -> <set>, email: <set> -> <changed>"},

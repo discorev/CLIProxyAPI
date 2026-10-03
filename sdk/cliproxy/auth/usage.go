@@ -8,7 +8,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
+
+// UsageFlightMaxAge bounds shared-flight reuse, not the upstream connection.
+const UsageFlightMaxAge = 5 * time.Minute
 
 // UsageWindow is a subscription limit. Length is expressed in seconds.
 type UsageWindow struct {
@@ -168,10 +173,15 @@ func (m *Manager) RefreshUsage(ctx context.Context, authID string) (CredentialUs
 }
 
 func (m *Manager) refreshUsage(ctx context.Context, authID, trigger string) (CredentialUsage, error) {
+	return m.refreshUsageForReset(ctx, authID, trigger, nil)
+}
+
+// A reset reservation pins its refresh to the same credential generation.
+func (m *Manager) refreshUsageForReset(ctx context.Context, authID, trigger string, state *resetAttempt) (CredentialUsage, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	flight, auth, fetcher, leader, err := m.beginUsageRefresh(authID, trigger)
+	flight, auth, fetcher, leader, err := m.beginUsageRefreshForReset(authID, trigger, state)
 	if err != nil {
 		return emptyCredentialUsage(), err
 	}
@@ -190,6 +200,10 @@ func (m *Manager) refreshUsage(ctx context.Context, authID, trigger string) (Cre
 }
 
 func (m *Manager) beginUsageRefresh(id, trigger string) (*usageFlight, *Auth, UsageFetcher, bool, error) {
+	return m.beginUsageRefreshForReset(id, trigger, nil)
+}
+
+func (m *Manager) beginUsageRefreshForReset(id, trigger string, state *resetAttempt) (*usageFlight, *Auth, UsageFetcher, bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	auth := m.auths[id]
@@ -205,15 +219,20 @@ func (m *Manager) beginUsageRefresh(id, trigger string) (*usageFlight, *Auth, Us
 	}
 	m.usage.mu.Lock()
 	defer m.usage.mu.Unlock()
-	if flight := m.usage.flights[id]; flight != nil {
-		return flight, nil, nil, false, nil
+	if state != nil && m.usage.resets[id] != state {
+		return nil, nil, nil, false, ErrResetUnavailable
+	}
+	now := m.usage.timeNow()
+	previous := m.usage.flights[id]
+	if previous != nil && now.Before(previous.startedAt.Add(UsageFlightMaxAge)) {
+		return previous, nil, nil, false, nil
 	}
 	entry := m.usage.entries[id]
-	if usageFetchBlocked(entry, auth, m.usage.timeNow()) {
+	if usageFetchBlocked(entry, auth, now) {
 		return nil, nil, nil, false, nil
 	}
 	if trigger == "sweep" {
-		trigger = usageRefreshTrigger(entry, m.usage.timeNow())
+		trigger = usageRefreshTrigger(entry, now)
 		if auth.Disabled || auth.Status == StatusDisabled || trigger == "" {
 			return nil, nil, nil, false, nil
 		}
@@ -222,8 +241,16 @@ func (m *Manager) beginUsageRefresh(id, trigger string) (*usageFlight, *Auth, Us
 		m.usage.entries = make(map[string]*usageEntry)
 		m.usage.flights = make(map[string]*usageFlight)
 	}
-	flight := &usageFlight{done: make(chan struct{}), startedAt: m.usage.timeNow(), trigger: trigger}
+	flight := &usageFlight{done: make(chan struct{}), startedAt: now, trigger: trigger}
+	// Replacing the pointer detaches the old flight. Its connection is untouched,
+	// but its eventual completion can no longer publish usage or retry state.
 	m.usage.flights[id] = flight
+	if previous != nil {
+		log.WithFields(log.Fields{
+			"auth_id": id, "provider": auth.Provider,
+			"started_at": previous.startedAt.UTC().Format(time.RFC3339),
+		}).Info("usage fetch abandoned")
+	}
 	next := cloneUsageEntry(entry)
 	next.Refreshing = true
 	next.lastFetchStartedAt = flight.startedAt

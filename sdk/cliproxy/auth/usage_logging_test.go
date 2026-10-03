@@ -161,6 +161,11 @@ func TestUsageCacheClearedLogsIdentityAndRemoval(t *testing.T) {
 					t.Fatal(err)
 				}
 				manager.usage.entries = map[string]*usageEntry{"a": {}}
+				resetState := &resetAttempt{inFlight: true, attempted: time.Now(), retryAt: time.Now().Add(time.Hour), authError: true}
+				manager.usage.resets = map[string]*resetAttempt{"a": resetState}
+				decision := resetDecisionKey{authID: "a", rule: "last_chance"}
+				otherDecision := resetDecisionKey{authID: "other", rule: "last_chance"}
+				manager.usage.resetDecisions = map[resetDecisionKey]time.Time{decision: time.Now(), otherDecision: time.Now()}
 				replace := func(next *Auth) {
 					t.Helper()
 					var err error
@@ -183,8 +188,8 @@ func TestUsageCacheClearedLogsIdentityAndRemoval(t *testing.T) {
 				// Rotating a token is not an identity change or a clear event.
 				auth.Metadata["access_token"] = "rotated-secret-token"
 				replace(auth.Clone())
-				if len(usageLogs(hook)) != 0 || manager.usageSnapshot("a") == nil {
-					t.Fatal("token-only rotation cleared/logged cache")
+				if len(usageLogs(hook)) != 0 || manager.usageSnapshot("a") == nil || manager.usage.resets["a"] != resetState || len(manager.usage.resetDecisions) != 2 {
+					t.Fatal("token-only rotation cleared/logged usage or reset state")
 				}
 				fields := log.Fields{"auth_id": "a", "provider": tt.provider, "reason": "identity_changed", "identity_changes": tt.key + ": " + tt.change}
 				switch tt.key {
@@ -220,6 +225,9 @@ func TestUsageCacheClearedLogsIdentityAndRemoval(t *testing.T) {
 					t.Fatalf("clear logs = %#v, cache = %+v", entries, manager.usageSnapshot("a"))
 				}
 				assertUsageLog(t, entries[0], "usage cache cleared", fields)
+				if manager.usage.resets["a"] != nil || len(manager.usage.resetDecisions) != 1 || manager.usage.resetDecisions[otherDecision].IsZero() {
+					t.Fatal("account change retained reset state or cleared another account's dedupe")
+				}
 				if strings.Contains(fmt.Sprint(entries[0].Data), "secret") {
 					t.Fatal("identity/token values leaked")
 				}
@@ -331,5 +339,86 @@ func TestUsageAccountChangeReportsAllFieldsWithoutValues(t *testing.T) {
 	current.Metadata["account_id"] = " old-secret "
 	if reason, changes = usageAccountChange(previous, current); reason != "" || changes != "" {
 		t.Fatalf("normalization changed identity: reason=%q changes=%q", reason, changes)
+	}
+}
+
+func TestUsageStaleFlightSupersededWithoutDeadline(t *testing.T) {
+	for _, trigger := range []string{"manual", "sweep", "reset_loop"} {
+		t.Run(trigger, func(t *testing.T) {
+			hook := setupTestLoggerHook(t)
+			log.SetLevel(log.InfoLevel)
+			manager, executor, clock := setupResetManager(t, "codex")
+			registerUsageAuth(t, manager, "a", "codex")
+			executor.fetch = func(ctx context.Context, _ *Auth) (UsageFetchResult, error) {
+				if _, deadline := ctx.Deadline(); deadline || ctx.Err() != nil {
+					t.Fatal("stale-flight recovery added a network deadline or cancellation")
+				}
+				if executor.fetches.Load() == 2 {
+					return UsageFetchResult{}, &UsageHTTPError{StatusCode: 429}
+				}
+				return UsageFetchResult{Windows: []UsageWindow{{Kind: "7d", UsedPercent: 12}}}, nil
+			}
+			old, auth, fetcher, leader, err := manager.beginUsageRefresh("a", trigger)
+			if err != nil || !leader {
+				t.Fatalf("initial flight: leader=%v err=%v", leader, err)
+			}
+			clock.advance(UsageFlightMaxAge - time.Nanosecond)
+			joined, _, _, leader, err := manager.beginUsageRefresh("a", trigger)
+			if err != nil || leader || joined != old || usageRefreshDue(manager.usageSnapshot("a"), clock.now()) || resetRefreshDue(manager.usageSnapshot("a"), clock.now(), false) {
+				t.Fatal("live flight was not shared")
+			}
+			clock.advance(time.Nanosecond)
+			if !usageRefreshDue(manager.usageSnapshot("a"), clock.now()) || !resetRefreshDue(manager.usageSnapshot("a"), clock.now(), false) {
+				t.Fatal("stale flight suppressed sweep due-ness")
+			}
+			next, current, currentFetcher, leader, err := manager.beginUsageRefresh("a", trigger)
+			if err != nil || !leader || next == old {
+				t.Fatalf("stale flight not superseded: leader=%v err=%v", leader, err)
+			}
+			joined, _, _, leader, err = manager.beginUsageRefresh("a", trigger)
+			if err != nil || leader || joined != next {
+				t.Fatal("replacement flight not shared")
+			}
+			entries := usageLogs(hook)
+			if len(entries) != 1 {
+				t.Fatalf("abandonment logs=%d", len(entries))
+			}
+			assertUsageLog(t, entries[0], "usage fetch abandoned", log.Fields{
+				"auth_id": "a", "provider": "codex", "started_at": old.startedAt.UTC().Format(time.RFC3339),
+			})
+			manager.fetchUsage(context.Background(), current, currentFetcher, next)
+			cached := manager.usageSnapshot("a")
+			// The superseded request eventually returns a 429. Neither its data,
+			// retry state nor failure log may replace the newer successful fetch.
+			manager.fetchUsage(context.Background(), auth, fetcher, old)
+			if manager.usageSnapshot("a") != cached || len(usageLogs(hook)) != 2 || cached.Windows[0].UsedPercent != 12 {
+				t.Fatal("late stale completion changed current usage or logs")
+			}
+			if next, _, _, leader, err := manager.beginUsageRefresh("a", "manual"); err != nil || leader || next != nil {
+				t.Fatal("replacement fetch bypassed the three-minute floor")
+			}
+		})
+	}
+}
+
+func TestUsageStaleFlightHonorsCooldown(t *testing.T) {
+	manager, _, clock := setupResetManager(t, "claude")
+	registerUsageAuth(t, manager, "a", "claude")
+	old, _, _, _, _ := manager.beginUsageRefresh("a", "manual")
+	clock.advance(UsageFlightMaxAge)
+	entry := cloneUsageEntry(manager.usageSnapshot("a"))
+	entry.NextFetchAt = clock.now().Add(UsageClaude429Initial)
+	entry.CooldownUntil, entry.retryAt = entry.NextFetchAt, entry.NextFetchAt
+	manager.usage.entries["a"] = entry
+	for _, trigger := range []string{"manual", "sweep", "reset_loop"} {
+		flight, _, _, leader, err := manager.beginUsageRefresh("a", trigger)
+		if err != nil || flight != nil || leader || usageRefreshDue(entry, clock.now()) || resetRefreshDue(entry, clock.now(), false) {
+			t.Fatalf("%s joined stale flight or bypassed cooldown", trigger)
+		}
+	}
+	clock.advance(UsageClaude429Initial)
+	flight, _, _, leader, err := manager.beginUsageRefresh("a", "sweep")
+	if err != nil || !leader || flight == old {
+		t.Fatal("elapsed cooldown did not allow stale flight replacement")
 	}
 }

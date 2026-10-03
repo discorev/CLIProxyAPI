@@ -73,8 +73,12 @@ func (m *Manager) removeUsageLocked(auth *Auth, reason, changes string) {
 	cleared := m.usage.entries[id] != nil || m.usage.flights[id] != nil
 	delete(m.usage.entries, id)
 	delete(m.usage.flights, id)
-	if state := m.usage.resets[id]; state != nil && !state.inFlight {
-		delete(m.usage.resets, id)
+	// Detach even in-flight reservations: their pointer is the reset generation.
+	delete(m.usage.resets, id)
+	for key := range m.usage.resetDecisions {
+		if key.authID == id {
+			delete(m.usage.resetDecisions, key)
+		}
 	}
 	if cleared {
 		fields := log.Fields{"auth_id": id, "provider": auth.Provider, "reason": reason}

@@ -139,3 +139,25 @@ func TestSubscriptionResetDoesNotFollowRedirect(t *testing.T) {
 		t.Fatalf("redirect replay: result=%+v err=%v calls=%d", result, err, calls.Load())
 	}
 }
+
+func TestSubscriptionResetCodexHTTPRefusals(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+			executor := NewCodexExecutor(nil)
+			executor.resetBaseURL = server.URL
+			auth := &cliproxyauth.Auth{Provider: "codex", Metadata: map[string]interface{}{"access_token": "fake-token"}}
+			result, err := executor.ApplyReset(context.Background(), auth, cliproxyauth.ResetRequest{})
+			want := "auth_error"
+			if status == http.StatusInternalServerError {
+				want = "unknown"
+			}
+			if result.Result != want || result.NotSent || (err != nil) != (want == "unknown") {
+				t.Fatalf("status=%d result=%+v err=%v", status, result, err)
+			}
+		})
+	}
+}

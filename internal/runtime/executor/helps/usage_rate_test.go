@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -66,5 +67,69 @@ func TestUsageMain429CarriesSafeRetryMetadata(t *testing.T) {
 	var limit *cliproxyauth.UsageHTTPError
 	if !errors.As(err, &limit) || limit.StatusCode != 429 || limit.RetryAfter != 0 || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("error=%v limit=%+v", err, limit)
+	}
+}
+
+func TestUsageResponseBodyLimit(t *testing.T) {
+	for _, endpoint := range []struct{ provider, path, rawKey, label string }{
+		{"claude", "/api/oauth/usage", "usage", "claude usage"},
+		{"claude", "/api/oauth/profile", "profile", "claude profile"},
+		{"codex", "/backend-api/wham/usage", "usage", "codex usage"},
+		{"codex", "/backend-api/subscriptions", "subscription", "codex subscription"},
+		{"codex", "/backend-api/wham/rate-limit-reset-credits", "reset_credits", "codex reset credits"},
+	} {
+		for _, oversized := range []bool{false, true} {
+			name := endpoint.label + "/at-limit"
+			if oversized {
+				name = endpoint.label + "/over-limit"
+			}
+			t.Run(name, func(t *testing.T) {
+				size := usageResponseMaxBytes
+				if oversized {
+					size++
+				}
+				payload := "{}" + strings.Repeat(" ", size-2)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == endpoint.path {
+						// Exercise an unknown-length (chunked) response too.
+						w.(http.Flusher).Flush()
+						_, _ = io.WriteString(w, payload)
+						return
+					}
+					_, _ = io.WriteString(w, `{}`)
+				}))
+				defer server.Close()
+				request := func(ctx context.Context, _ *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
+					if _, deadline := ctx.Deadline(); deadline {
+						t.Fatal("fetch added a network deadline")
+					}
+					req.URL.Scheme, req.URL.Host = "http", server.Listener.Addr().String()
+					return server.Client().Do(req)
+				}
+				auth := &cliproxyauth.Auth{Provider: endpoint.provider, Metadata: map[string]interface{}{"access_token": "fake-token"}}
+				fetch := FetchClaudeUsage
+				if endpoint.provider == "codex" {
+					fetch = FetchCodexUsage
+				}
+				result, err := fetch(context.Background(), auth, request)
+				if !oversized {
+					if err != nil || result.LastError != "" || len(result.Raw[endpoint.rawKey]) != size {
+						t.Fatalf("exactly 4 MiB rejected: err=%v ancillary=%q length=%d", err, result.LastError, len(result.Raw[endpoint.rawKey]))
+					}
+					return
+				}
+				want := endpoint.label + ": usage response exceeds 4 MiB"
+				if endpoint.rawKey == "usage" {
+					if err == nil || err.Error() != want {
+						t.Fatalf("oversized usage error=%v want=%q", err, want)
+					}
+				} else if err != nil || result.LastError != want {
+					t.Fatalf("oversized ancillary error=%v last_error=%q want=%q", err, result.LastError, want)
+				}
+				if _, stored := result.Raw[endpoint.rawKey]; stored {
+					t.Fatal("oversized body was stored")
+				}
+			})
+		}
 	}
 }

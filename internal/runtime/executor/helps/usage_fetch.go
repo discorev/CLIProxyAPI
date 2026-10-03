@@ -16,6 +16,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const usageResponseMaxBytes = 4 * 1024 * 1024
+
 // UsageHTTPRequest uses the executor's proxy-aware, fingerprinted HTTP path.
 type UsageHTTPRequest func(context.Context, *cliproxyauth.Auth, *http.Request) (*http.Response, error)
 
@@ -105,7 +107,10 @@ func fetchUsageJSON(ctx context.Context, auth *cliproxyauth.Auth, request UsageH
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, &cliproxyauth.UsageHTTPError{StatusCode: response.StatusCode, RetryAfter: usageRetryAfter(response.Header.Get("Retry-After"), cliproxyauth.UsageFetchOptionsFromContext(ctx).Now)}
 	}
-	body, errRead := io.ReadAll(response.Body)
+	body, errRead := io.ReadAll(io.LimitReader(response.Body, usageResponseMaxBytes+1))
+	if len(body) > usageResponseMaxBytes {
+		return nil, errors.New("usage response exceeds 4 MiB")
+	}
 	if errRead != nil {
 		return nil, errors.New("failed to read response")
 	}

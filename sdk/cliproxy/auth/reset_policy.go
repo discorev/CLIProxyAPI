@@ -178,10 +178,10 @@ func resetRefreshDue(entry *usageEntry, now time.Time, locked bool) bool {
 	if entry == nil {
 		return true
 	}
-	if entry.Refreshing || now.Before(entry.NextFetchAt) || now.Before(entry.retryAt) {
+	if usageRefreshInFlight(entry, now) || now.Before(entry.NextFetchAt) || now.Before(entry.retryAt) {
 		return false
 	}
-	if entry.FetchedAt.IsZero() || entry.waitForToken || locked || !entry.retryAt.IsZero() {
+	if entry.Refreshing || entry.FetchedAt.IsZero() || entry.waitForToken || locked || !entry.retryAt.IsZero() {
 		return true
 	}
 	// Empty inventories also need hourly checks to discover newly granted resets.

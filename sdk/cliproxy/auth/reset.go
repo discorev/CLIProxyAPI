@@ -13,9 +13,12 @@ import (
 // and its refresh, so manual and automatic callers share the same spending guard.
 type resetAttempt struct {
 	inFlight  bool
+	authError bool
 	attempted time.Time
 	retryAt   time.Time
 }
+
+const resetRefusalBackoff = 15 * time.Minute
 
 func resetLocked(state *resetAttempt, entry *usageEntry, now time.Time) bool {
 	if state == nil || state.attempted.IsZero() {
@@ -46,6 +49,10 @@ func (m *Manager) reserveReset(ctx context.Context, id string, expected *usageEn
 	}
 	if ctx.Err() != nil {
 		return nil, nil, nil, ctx.Err()
+	}
+	if auth.Disabled || auth.Status == StatusDisabled ||
+		(state != nil && state.authError && m.usage.timeNow().Before(state.retryAt)) {
+		return nil, nil, nil, ErrResetUnavailable
 	}
 	if expected != nil {
 		if m.resetDryRun() || !m.automaticResetAvailable(auth, expected, state, m.usage.timeNow()) {
@@ -88,14 +95,14 @@ func (m *Manager) ApplyCredentialReset(ctx context.Context, id, grantID string) 
 		return ResetResult{}, m.UsageSnapshot(id), err
 	}
 	defer m.releaseReset(state)
-	entry, errRefresh := m.RefreshUsage(ctx, id)
+	entry, errRefresh := m.refreshUsageForReset(ctx, id, "manual", state)
 	m.usage.mu.RLock()
 	locked := resetLocked(state, m.usage.entries[id], m.usage.timeNow())
 	m.usage.mu.RUnlock()
 	if locked {
 		return ResetResult{RefreshPending: true}, entry, ErrResetPendingRefresh
 	}
-	if errRefresh != nil || !resetInventoryFresh(entry, m.usage.timeNow()) || !m.resetAuthCurrent(auth, false) {
+	if errRefresh != nil || !resetInventoryFresh(entry, m.usage.timeNow()) {
 		return ResetResult{}, entry, ErrResetUnavailable
 	}
 	choice := manualResetChoice(strings.ToLower(strings.TrimSpace(auth.Provider)), entry, strings.TrimSpace(grantID), m.usage.timeNow())
@@ -105,12 +112,18 @@ func (m *Manager) ApplyCredentialReset(ctx context.Context, id, grantID string) 
 	return m.executeReset(ctx, auth, applier, state, entry, *choice)
 }
 
-func (m *Manager) resetAuthCurrent(auth *Auth, automatic bool) bool {
+// currentResetAuth returns the latest token without crossing an account lifecycle.
+func (m *Manager) currentResetAuth(auth *Auth, state *resetAttempt) *Auth {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	m.usage.mu.RLock()
+	defer m.usage.mu.RUnlock()
 	current := m.auths[auth.ID]
-	return current != nil && UsageFetchable(current) && !usageAccountChanged(auth, current) &&
-		(!automatic || (!current.Disabled && current.Status != StatusDisabled))
+	if m.usage.resets[auth.ID] != state || current == nil || !UsageFetchable(current) ||
+		usageAccountChanged(auth, current) || current.Disabled || current.Status == StatusDisabled {
+		return nil
+	}
+	return current.Clone()
 }
 
 func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApplier, state *resetAttempt, entry CredentialUsage, choice resetChoice) (ResetResult, CredentialUsage, error) {
@@ -119,9 +132,11 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 	if choice.rule != "manual" && m.resetDryRun() {
 		return ResetResult{Result: "unavailable", NotSent: true}, m.UsageSnapshot(auth.ID), ErrResetUnavailable
 	}
-	if ctx.Err() != nil || !m.resetAuthCurrent(auth, choice.rule != "manual") {
+	current := m.currentResetAuth(auth, state)
+	if ctx.Err() != nil || current == nil {
 		return m.resetRefused(auth, state, choice, ResetResult{Result: "unavailable", NotSent: true})
 	}
+	auth = current
 	request := ResetRequest{GrantID: choice.grantID}
 	var profile struct {
 		Organization struct {
@@ -147,32 +162,45 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 		"auth_id": auth.ID, "provider": auth.Provider, "rule": choice.rule,
 		"grant_id": choice.grantID, "reset_expires_at": choice.expires, "outcome": result.Result,
 	}).Info("subscription reset attempt")
-	if result.Result == "reset" {
-		m.clearResetQuota(auth)
-	}
-	// Even a known upstream refusal takes this lock. A transport/read failure
-	// is not evidence that nothing was spent and must never trigger a retry.
 	m.usage.mu.Lock()
+	if m.usage.resets[auth.ID] != state {
+		m.usage.mu.Unlock()
+		return result, m.UsageSnapshot(auth.ID), nil
+	}
+	state.authError = result.Result == "auth_error"
+	if state.authError {
+		// HTTP 401/403 is definitely not spent. Keep only a bounded retry delay,
+		// for both providers and manual callers; no post-attempt fetch is needed.
+		state.attempted = time.Time{}
+		state.retryAt = finished.Add(resetRefusalBackoff)
+		m.usage.mu.Unlock()
+		return result, m.UsageSnapshot(auth.ID), nil
+	}
+	// Other outcomes retain the spend lock: transport/read failures and 5xx
+	// responses cannot establish that the grant was not consumed.
 	state.attempted = finished
 	state.retryAt = time.Time{}
 	if strings.EqualFold(auth.Provider, "claude") && resetNeedsBackoff(result.Result) {
 		state.retryAt = resetBackoffUntil(entry.Resets, finished)
 	}
 	m.usage.mu.Unlock()
+	if result.Result == "reset" {
+		m.clearResetQuota(auth, state)
+	}
 	// A pre-attempt usage flight can return stale inventory. Join it first,
 	// then request a new fetch after the POST has settled. Shared fetch rate
 	// limits can defer it; the lock stays set until a later fetch succeeds.
-	refreshed := m.refreshAfterReset(context.WithoutCancel(ctx), auth, finished)
+	refreshed := m.refreshAfterReset(context.WithoutCancel(ctx), auth, state, finished)
 	if strings.EqualFold(auth.Provider, "claude") && resetNeedsBackoff(result.Result) {
 		m.usage.mu.Lock()
-		if refreshed.Resets != nil && refreshed.Resets.ClaudeResetStatus != nil &&
+		if m.usage.resets[auth.ID] == state && refreshed.Resets != nil && refreshed.Resets.ClaudeResetStatus != nil &&
 			refreshed.Resets.CooldownUntil != nil && refreshed.Resets.CooldownUntil.After(finished) {
 			state.retryAt = *refreshed.Resets.CooldownUntil
 		}
 		m.usage.mu.Unlock()
 	}
 	m.usage.mu.RLock()
-	result.RefreshPending = resetLocked(state, m.usage.entries[auth.ID], m.usage.timeNow())
+	result.RefreshPending = m.usage.resets[auth.ID] == state && resetLocked(state, m.usage.entries[auth.ID], m.usage.timeNow())
 	m.usage.mu.RUnlock()
 	// Attempted outcomes are data, not HTTP-handler errors. Do not expose
 	// executor errors (which may contain sensitive transport details).
@@ -182,7 +210,9 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 func (m *Manager) resetRefused(auth *Auth, state *resetAttempt, choice resetChoice, result ResetResult) (ResetResult, CredentialUsage, error) {
 	if choice.rule != "manual" {
 		m.usage.mu.Lock()
-		state.retryAt = m.usage.timeNow().Add(15 * time.Minute)
+		if m.usage.resets[auth.ID] == state {
+			state.retryAt = m.usage.timeNow().Add(resetRefusalBackoff)
+		}
 		m.usage.mu.Unlock()
 	}
 	log.WithFields(log.Fields{
@@ -194,7 +224,7 @@ func (m *Manager) resetRefused(auth *Auth, state *resetAttempt, choice resetChoi
 
 func resetNeedsBackoff(outcome string) bool {
 	switch outcome {
-	case "cooldown", "ineligible", "unavailable", "rate_limited", "auth_error":
+	case "cooldown", "ineligible", "unavailable", "rate_limited":
 		return true
 	default:
 		return false
@@ -205,19 +235,20 @@ func resetBackoffUntil(resets *CredentialResets, now time.Time) time.Time {
 	if resets != nil && resets.ClaudeResetStatus != nil && resets.CooldownUntil != nil && resets.CooldownUntil.After(now) {
 		return *resets.CooldownUntil
 	}
-	return now.Add(15 * time.Minute)
+	return now.Add(resetRefusalBackoff)
 }
 
-func (m *Manager) refreshAfterReset(ctx context.Context, auth *Auth, attempted time.Time) CredentialUsage {
+func (m *Manager) refreshAfterReset(ctx context.Context, auth *Auth, state *resetAttempt, attempted time.Time) CredentialUsage {
 	m.usage.mu.RLock()
 	flight := m.usage.flights[auth.ID]
+	current := m.usage.resets[auth.ID] == state
 	m.usage.mu.RUnlock()
-	if flight != nil && flight.startedAt.Before(attempted) {
-		<-flight.done
-	}
-	if !m.resetAuthCurrent(auth, false) {
+	if !current {
 		return m.UsageSnapshot(auth.ID)
 	}
-	entry, _ := m.refreshUsage(ctx, auth.ID, "reset")
+	if flight != nil && flight.startedAt.Before(attempted) && m.usage.timeNow().Before(flight.startedAt.Add(UsageFlightMaxAge)) {
+		<-flight.done
+	}
+	entry, _ := m.refreshUsageForReset(ctx, auth.ID, "reset", state)
 	return entry
 }

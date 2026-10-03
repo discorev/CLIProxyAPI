@@ -10,11 +10,14 @@ import (
 
 // clearResetQuota clears only limits restored by the confirmed upstream reset.
 // It does not turn a usage reset into a general authentication/error reset.
-func (m *Manager) clearResetQuota(attemptAuth *Auth) {
+func (m *Manager) clearResetQuota(attemptAuth *Auth, attempt *resetAttempt) {
 	now := m.usage.timeNow()
 	m.mu.Lock()
+	m.usage.mu.RLock()
+	current := m.usage.resets[attemptAuth.ID] == attempt
+	m.usage.mu.RUnlock()
 	auth := m.auths[attemptAuth.ID]
-	if auth == nil || usageAccountChanged(attemptAuth, auth) {
+	if !current || auth == nil || usageAccountChanged(attemptAuth, auth) {
 		m.mu.Unlock()
 		return
 	}

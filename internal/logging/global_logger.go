@@ -60,7 +60,7 @@ var logFieldOrder = []string{
 	"media_session_id", "call_id", "peer", "state", "reason",
 	"rule", "grant_id", "credit_id", "reset_expires_at", "natural_recovery", "outcome",
 	"previous_auth_id", "weekly_reset", "fallback", "skipped", "cooldown_until",
-	"trigger", "windows", "summary", "retry_at", "identity_changes",
+	"trigger", "windows", "summary", "retry_at", "identity_changes", "started_at",
 }
 
 var quotedLogFields = map[string]struct{}{

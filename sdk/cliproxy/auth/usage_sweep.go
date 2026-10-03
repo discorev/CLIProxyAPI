@@ -11,6 +11,11 @@ import (
 // traffic keeps header-derived windows fresh.
 const usageIdleRefreshInterval = 15 * time.Minute
 
+func usageRefreshInFlight(entry *usageEntry, now time.Time) bool {
+	return entry != nil && entry.Refreshing &&
+		(entry.lastFetchStartedAt.IsZero() || now.Before(entry.lastFetchStartedAt.Add(UsageFlightMaxAge)))
+}
+
 func usageRefreshDue(entry *usageEntry, now time.Time) bool {
 	return usageRefreshTrigger(entry, now) != ""
 }
@@ -21,8 +26,11 @@ func usageRefreshTrigger(entry *usageEntry, now time.Time) string {
 	if entry == nil {
 		return "initial"
 	}
-	if entry.Refreshing || now.Before(entry.NextFetchAt) || now.Before(entry.retryAt) {
+	if usageRefreshInFlight(entry, now) || now.Before(entry.NextFetchAt) || now.Before(entry.retryAt) {
 		return ""
+	}
+	if entry.Refreshing {
+		return "retry" // A stale flight must not suppress another sweep fetch.
 	}
 	// An elapsed retry is due even if traffic keeps header observations fresh.
 	if entry.waitForToken || !entry.retryAt.IsZero() {
