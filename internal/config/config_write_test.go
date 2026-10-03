@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -161,7 +160,7 @@ func TestWriteConfigFileRestoreFailureKeepsStagedCopy(t *testing.T) {
 	}
 }
 
-func TestWriteConfigFileMissingFileWriteFailureRemovesPartial(t *testing.T) {
+func TestWriteConfigFileMissingFileWriteFailureEmptiesPartial(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	failWriteCalls(t, 1)
 
@@ -169,8 +168,8 @@ func TestWriteConfigFileMissingFileWriteFailureRemovesPartial(t *testing.T) {
 		t.Fatal("expected write error")
 	}
 
-	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("partial file left behind, stat err = %v", err)
+	if got := readTestConfig(t, path); got != "" {
+		t.Fatalf("partial content left behind: %q", got)
 	}
 }
 

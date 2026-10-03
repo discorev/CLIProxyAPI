@@ -30,7 +30,7 @@ var writeAndSync = func(f *os.File, data []byte) error {
 // staged in a recovery copy, in the config directory or else in os.TempDir(); the
 // save is refused if neither can hold it. The original bytes are restored if the
 // in-place write fails, and the recovery copy is kept if that restore fails too.
-// A file this call created is removed if its write fails. perm only applies when
+// A file this call created is emptied if its write fails. perm only applies when
 // path does not exist yet.
 func WriteConfigFile(path string, data []byte, perm os.FileMode) error {
 	configWriteMu.Lock()
@@ -79,27 +79,23 @@ func WriteConfigFile(path string, data []byte, perm os.FileMode) error {
 }
 
 // writeNewConfig writes data to f, a file this call just created at path. On failure
-// it removes path only if it is still that file, so a file installed by someone else
-// is left alone.
+// it empties the file through f instead of removing path, so a config another process
+// installed at path meanwhile cannot be deleted. Optional loads treat an empty config
+// like a missing one.
 func writeNewConfig(f *os.File, path string, data []byte) error {
 	errWrite := writeAndSync(f, data)
-	created, errStat := f.Stat()
+	if errWrite != nil {
+		if errTruncate := f.Truncate(0); errTruncate != nil {
+			log.Warnf("failed to empty partial config %s: %v", path, errTruncate)
+		}
+	}
 	if errClose := f.Close(); errWrite == nil {
 		errWrite = errClose
 	}
-	if errWrite == nil {
-		return nil
-	}
-	if errStat != nil {
-		log.Warnf("failed to stat partial config %s, leaving it in place: %v", path, errStat)
+	if errWrite != nil {
 		return fmt.Errorf("write config: %w", errWrite)
 	}
-	if current, errCurrent := os.Stat(path); errCurrent == nil && os.SameFile(created, current) {
-		if errRemove := os.Remove(path); errRemove != nil && !errors.Is(errRemove, fs.ErrNotExist) {
-			log.Warnf("failed to remove partial config %s: %v", path, errRemove)
-		}
-	}
-	return fmt.Errorf("write config: %w", errWrite)
+	return nil
 }
 
 // stageConfig writes data to a recovery copy and returns its path. The copy is never
