@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -155,5 +156,38 @@ func TestWriteConfigFileRestoreFailureKeepsStagedCopy(t *testing.T) {
 	}
 	if got := readTestConfig(t, left[0]); got != "port: 2\n" {
 		t.Fatalf("recovery copy = %q", got)
+	}
+}
+
+func TestWriteConfigFileMissingFileWriteFailureRemovesPartial(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	failWriteCalls(t, 1)
+
+	if err := WriteConfigFile(path, []byte("port: 2\n"), 0o600); err == nil {
+		t.Fatal("expected write error")
+	}
+
+	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("partial file left behind, stat err = %v", err)
+	}
+}
+
+func TestWriteConfigFileReadOnlyDirSkipsStaging(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	path := writeTestConfig(t, "port: 1\nlonger: content-that-gets-truncated\n")
+	dir := filepath.Dir(path)
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	if err := WriteConfigFile(path, []byte("port: 2\n"), 0o600); err != nil {
+		t.Fatalf("WriteConfigFile: %v", err)
+	}
+
+	if got := readTestConfig(t, path); got != "port: 2\n" {
+		t.Fatalf("content = %q", got)
 	}
 }
