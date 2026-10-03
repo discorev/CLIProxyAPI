@@ -3,7 +3,33 @@
 Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with OAuth and round-robin load balancing.
 
 ## Repository
-- GitHub: https://github.com/router-for-me/CLIProxyAPI
+**discorev/CLIProxyAPI** (`origin`), a fork of router-for-me/CLIProxyAPI. Releases are tagged `vX.Y.Z-fork.N`. The dashboard fork is discorev/Cli-Proxy-API-Management-Center.
+
+### Upstream
+- `upstream`: router-for-me/CLIProxyAPI. Never push or open PRs there unless asked.
+- Merge `upstream/main` into a branch off `main` and PR it into `origin/main`. Never rebase or force-push `main`.
+- Conflicts: keep the divergences in **Fork notes** and take upstream elsewhere. Flag any new `router-for-me` URLs.
+- Upstream's contributor-management workflows were deleted because they don't fit a single-maintainer fork. Keep them deleted on modify/delete conflicts:
+  - `agents-md-guard` auto-closes PRs that touch `AGENTS.md`.
+  - `auto-retarget-main-pr-to-dev` moves PRs to upstream's `dev` branch; the fork works on `main`.
+  - `pr-path-guard` blocks `internal/translator/**` changes.
+- Release the proxy before any dashboard release that depends on new proxy APIs.
+
+## Fork notes
+The fork exists to:
+- make new Claude and Codex models usable as soon as they ship (see Model catalogs);
+- let new Claude Code features work without a gateway change each time (see Claude native passthrough);
+- make better use of multiple subscriptions (see `intelligent-fill`, the usage cache and reset auto-apply).
+
+- **Distribution:** the fork publishes its own images, `ghcr.io/discorev/cli-proxy-api`, because upstream's images lack its changes. Containers run in UTC, and CI builds images only, with no binary releases.
+- **Management panel:** defaults to the dashboard fork, and an explicit upstream panel repo is redirected to it. The fork's panel uses fork-only APIs, and the upstream panel lacks them.
+- **Model catalogs:** fetched from `discorev/ai-models`, so new Claude and Codex models can be added as soon as they ship. Twice in a row, upstream's model file lagged new releases and the models were unusable through the router. That lag is why the fork was started.
+- **Claude native passthrough:** genuine Claude Code / Agent SDK requests are forwarded unchanged except for auth. Server-side features such as the auto-mode classifier need the client's betas, `safeguards` field and real version to reach Anthropic intact.
+- **`intelligent-fill` routing:** sends traffic to the subscription whose weekly window resets soonest, skipping subs with an exhausted window, so each sub's allowance is used before it resets. It currently runs as a custom Selector on the legacy `Pick` path, not in the scheduler fast path. This was a shortcut to keep the fork's diff out of upstream's scheduler code. It is known debt to revisit with proper scheduler integration, not a design to preserve.
+- **Usage cache:** a single in-memory view per credential, fed by the upstream usage endpoints and response rate-limit headers. Both routing and the dashboard read it, so the endpoints are not polled twice.
+- **Usage fetch rate limits are deliberate:** a 3-minute per-credential floor and 429 cooldown ladders (Claude 20→40→60 min). Claude's usage endpoint 429s without `Retry-After`, the lockout can last about an hour, and polling during it extends it. Do not shorten them.
+- **Reset auto-apply / dry-run** (`reset-credits.*`, default off): spends banked resets before they'd be wasted. The rules differ per provider: a Codex reset restarts the weekly window, while a Claude grant clears usage without moving it. Claude grants normally wait until every Claude account is exhausted and more than an hour remains until natural recovery. To avoid wasting an expiring grant, it is spent earlier if its subscription is exhausted and it expires before recovery, or in its last 15 minutes if it does not require being at the limit. Dry-run logs decisions without sending anything. Tests must never hit real reset endpoints.
+- **Log allowlist:** the production log formatter silently drops fields that aren't allowlisted, so new structured log fields must be added to it.
 
 ## Commands
 ```bash

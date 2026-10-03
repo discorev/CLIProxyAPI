@@ -102,6 +102,9 @@ type Config struct {
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
+	// ResetCredits enables opt-in automatic reset redemption for OAuth credentials.
+	ResetCredits ResetCreditsConfig `yaml:"reset-credits" json:"reset-credits"`
+
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
 

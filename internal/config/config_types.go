@@ -350,10 +350,17 @@ type QuotaExceeded struct {
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
 }
 
+// ResetCreditsConfig controls automatic use of banked Codex credits and Claude grants.
+// It is off by default, independently of the routing strategy.
+type ResetCreditsConfig struct {
+	AutoApply bool `yaml:"auto-apply" json:"auto-apply"`
+	DryRun    bool `yaml:"dry-run" json:"dry-run"`
+}
+
 // RoutingConfig configures how credentials are selected for requests.
 type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
-	// Supported values: "round-robin" (default), "weighted-round-robin", "fill-first".
+	// Supported values: "round-robin" (default), "weighted-round-robin", "fill-first", "intelligent-fill".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
 	// SessionAffinity enables universal session-sticky routing for all clients.
