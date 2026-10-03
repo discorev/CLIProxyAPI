@@ -422,3 +422,29 @@ func TestUsageStaleFlightHonorsCooldown(t *testing.T) {
 		t.Fatal("elapsed cooldown did not allow stale flight replacement")
 	}
 }
+
+func TestUsageAtMostOneAbandonedFlightOutstanding(t *testing.T) {
+	manager, _, clock := setupResetManager(t, "codex")
+	registerUsageAuth(t, manager, "a", "codex")
+	first, _, _, leader, err := manager.beginUsageRefresh("a", "manual")
+	if err != nil || !leader {
+		t.Fatalf("initial flight: leader=%v err=%v", leader, err)
+	}
+	clock.advance(UsageFlightMaxAge)
+	second, _, _, leader, err := manager.beginUsageRefresh("a", "manual")
+	if err != nil || !leader || second == first {
+		t.Fatalf("stale flight not superseded: leader=%v err=%v", leader, err)
+	}
+	// The replacement stalls too while the first is still outstanding: no third
+	// connection may be opened, and callers get cached usage instead.
+	clock.advance(UsageFlightMaxAge)
+	if third, _, _, leader, err := manager.beginUsageRefresh("a", "manual"); err != nil || leader || third != nil {
+		t.Fatalf("opened another fetch while one abandoned request is outstanding: leader=%v err=%v", leader, err)
+	}
+	// Once the abandoned request finally returns, the stalled replacement can
+	// itself be superseded.
+	close(first.done)
+	if third, _, _, leader, err := manager.beginUsageRefresh("a", "manual"); err != nil || !leader || third == second {
+		t.Fatalf("supersession not restored after abandoned request finished: leader=%v err=%v", leader, err)
+	}
+}

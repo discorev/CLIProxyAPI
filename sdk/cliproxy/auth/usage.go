@@ -105,9 +105,12 @@ type usageCache struct {
 	mu             sync.RWMutex
 	entries        map[string]*usageEntry
 	flights        map[string]*usageFlight
-	cancel         context.CancelFunc
-	now            func() time.Time
-	newTicker      func() usageTicker
+	// abandoned holds the last superseded flight per credential. Only one may
+	// stay outstanding, bounding stalled connections without a deadline.
+	abandoned map[string]*usageFlight
+	cancel    context.CancelFunc
+	now       func() time.Time
+	newTicker func() usageTicker
 }
 
 func (u *usageCache) timeNow() time.Time {
@@ -227,6 +230,11 @@ func (m *Manager) beginUsageRefreshForReset(id, trigger string, state *resetAtte
 	if previous != nil && now.Before(previous.startedAt.Add(UsageFlightMaxAge)) {
 		return previous, nil, nil, false, nil
 	}
+	if previous != nil && !usageFlightDone(m.usage.abandoned[id]) {
+		// An earlier superseded request is still stalled; serve cached usage
+		// rather than opening another connection.
+		return nil, nil, nil, false, nil
+	}
 	entry := m.usage.entries[id]
 	if usageFetchBlocked(entry, auth, now) {
 		return nil, nil, nil, false, nil
@@ -246,6 +254,10 @@ func (m *Manager) beginUsageRefreshForReset(id, trigger string, state *resetAtte
 	// but its eventual completion can no longer publish usage or retry state.
 	m.usage.flights[id] = flight
 	if previous != nil {
+		if m.usage.abandoned == nil {
+			m.usage.abandoned = make(map[string]*usageFlight)
+		}
+		m.usage.abandoned[id] = previous
 		log.WithFields(log.Fields{
 			"auth_id": id, "provider": auth.Provider,
 			"started_at": previous.startedAt.UTC().Format(time.RFC3339),
@@ -342,4 +354,17 @@ func mergeUsageWindow(windows []UsageWindow, window UsageWindow) []UsageWindow {
 		}
 	}
 	return append(windows, window)
+}
+
+// usageFlightDone reports whether a flight has finished; nil counts as done.
+func usageFlightDone(flight *usageFlight) bool {
+	if flight == nil {
+		return true
+	}
+	select {
+	case <-flight.done:
+		return true
+	default:
+		return false
+	}
 }
