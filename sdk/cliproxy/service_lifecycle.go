@@ -94,6 +94,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	s.applyUsageSweepConfig(s.cfg)
+	s.applyResetLoopConfig(s.cfg)
 
 	if !homeEnabled {
 		tokenResult, err := s.tokenProvider.Load(ctx, s.cfg)
@@ -290,6 +291,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 		if s.coreManager != nil {
 			s.coreManager.StopUsageSweep()
+			s.coreManager.StopResetLoop()
 			s.coreManager.StopAutoRefresh()
 		}
 		if s.watcher != nil {

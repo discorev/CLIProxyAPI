@@ -21,6 +21,7 @@ import (
 // ClaudeExecutor is a stateless executor for Anthropic Claude over the messages API.
 // If api_key is unavailable on auth, it falls back to legacy via ClientAdapter.
 type ClaudeExecutor struct {
+	resetBaseURL            string // Only overridden by offline executor tests.
 	cfg                     *config.Config
 	requestLogProvider      string
 	upstreamModelNormalizer func(string) string
@@ -227,6 +228,10 @@ func (e *ClaudeExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Au
 
 func (e *ClaudeExecutor) FetchUsage(ctx context.Context, auth *cliproxyauth.Auth) (cliproxyauth.UsageFetchResult, error) {
 	return helps.FetchClaudeUsage(ctx, auth, e.HttpRequest)
+}
+
+func (e *ClaudeExecutor) ApplyReset(ctx context.Context, auth *cliproxyauth.Auth, request cliproxyauth.ResetRequest) (cliproxyauth.ResetResult, error) {
+	return helps.ApplyClaudeReset(ctx, auth, request, e.resetBaseURL, helps.ResetHTTPTransport(e.cfg, e.PrepareRequest))
 }
 
 // HttpRequest injects Claude credentials into the request and executes it.

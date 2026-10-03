@@ -350,6 +350,12 @@ type QuotaExceeded struct {
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
 }
 
+// ResetCreditsConfig controls automatic use of banked Codex credits and Claude grants.
+// It is off by default, independently of the routing strategy.
+type ResetCreditsConfig struct {
+	AutoApply bool `yaml:"auto-apply" json:"auto-apply"`
+}
+
 // RoutingConfig configures how credentials are selected for requests.
 type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.

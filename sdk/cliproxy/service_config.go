@@ -229,6 +229,7 @@ func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) b
 	}
 	s.coreManager.SetOAuthModelAlias(commit.cfg.OAuthModelAlias)
 	s.applyUsageSweepConfig(commit.cfg)
+	s.applyResetLoopConfig(commit.cfg)
 	return true
 }
 
@@ -240,6 +241,17 @@ func (s *Service) applyUsageSweepConfig(cfg *config.Config) {
 		s.coreManager.StartUsageSweep()
 	} else {
 		s.coreManager.StopUsageSweep()
+	}
+}
+
+func (s *Service) applyResetLoopConfig(cfg *config.Config) {
+	if s.coreManager == nil {
+		return
+	}
+	if cfg != nil && !cfg.Home.Enabled && cfg.ResetCredits.AutoApply {
+		s.coreManager.StartResetLoop()
+	} else {
+		s.coreManager.StopResetLoop()
 	}
 }
 

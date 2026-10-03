@@ -182,6 +182,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		changes = append(changes, fmt.Sprintf("codex.live-media-relay.ice-servers: updated (%d -> %d entries, credentials redacted)", len(oldLiveRelay.ICEServers), len(newLiveRelay.ICEServers)))
 	}
 
+	if oldCfg.ResetCredits.AutoApply != newCfg.ResetCredits.AutoApply {
+		changes = append(changes, fmt.Sprintf("reset-credits.auto-apply: %t -> %t", oldCfg.ResetCredits.AutoApply, newCfg.ResetCredits.AutoApply))
+	}
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
 	}

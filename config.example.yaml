@@ -124,6 +124,15 @@ access:
 #     max-string-bytes: 256
 #     staging-retention: 1m
 
+# Optional automatic spending of banked Codex reset credits and Claude reset grants.
+# Off by default; works with any routing strategy. Manual management resets stay available.
+# Codex credits apply when a window is exhausted and the credit expires before recovery,
+# or within the credit's last 15 minutes. Claude grants apply only when all Claude
+# credentials are exhausted with more than 60 minutes to recovery, when an expiring
+# grant would lapse before recovery, or in its last 15 minutes if no limit is required.
+# reset-credits:
+#   auto-apply: false
+
 # Routing strategy for selecting credentials when multiple match.
 routing:
   strategy: "round-robin" # round-robin (default), weighted-round-robin, fill-first, intelligent-fill

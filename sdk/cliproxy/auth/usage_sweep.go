@@ -9,11 +9,11 @@ func usageRefreshDue(entry *usageEntry, now time.Time) bool {
 	if entry == nil {
 		return true
 	}
-	if entry.Refreshing || now.Before(entry.retryAt) {
+	if entry.Refreshing || now.Before(entry.NextFetchAt) || now.Before(entry.retryAt) {
 		return false
 	}
 	// An elapsed retry is due even if traffic keeps header observations fresh.
-	if entry.FetchedAt.IsZero() || !entry.retryAt.IsZero() {
+	if entry.FetchedAt.IsZero() || entry.waitForToken || !entry.retryAt.IsZero() {
 		return true
 	}
 	for _, window := range entry.Windows {

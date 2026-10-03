@@ -67,7 +67,7 @@ func TestCredentialUsageAPI(t *testing.T) {
 		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &rows) != nil || len(rows) != 1 {
 			t.Fatalf("response: %d %s", rec.Code, rec.Body.String())
 		}
-		for _, field := range []string{"auth_index", "auth_id", "provider", "raw", "fetched_at", "windows", "observed_at", "refreshing", "last_error"} {
+		for _, field := range []string{"auth_index", "auth_id", "provider", "raw", "resets", "fetched_at", "windows", "observed_at", "refreshing", "last_error", "next_fetch_at", "cooldown_until"} {
 			if _, ok := rows[0][field]; !ok {
 				t.Errorf("missing field %s in %s", field, rec.Body.String())
 			}
@@ -92,7 +92,7 @@ func TestCredentialUsageAPI(t *testing.T) {
 	assertShape(request(http.MethodPost, "", `{"auth_index":"`+oauth.Index+`"}`), true)
 	assertShape(request(http.MethodGet, "?auth_index="+oauth.Index, ""), true)
 	assertShape(request(http.MethodPost, "", `{}`), true)
-	if executor.calls.Load() != 2 {
+	if executor.calls.Load() != 1 {
 		t.Fatalf("refresh calls = %d", executor.calls.Load())
 	}
 	for _, method := range []string{http.MethodGet, http.MethodPost} {
@@ -115,8 +115,8 @@ func TestCredentialUsageAPI(t *testing.T) {
 	executor.fail.Store(true)
 	failed := request(http.MethodPost, "", `{"auth_index":"`+oauth.Index+`"}`)
 	assertShape(failed, true)
-	if !strings.Contains(failed.Body.String(), "upstream status 429") {
-		t.Fatalf("missing last_error: %s", failed.Body.String())
+	if executor.calls.Load() != 1 || strings.Contains(failed.Body.String(), "upstream status 429") {
+		t.Fatalf("manual refresh bypassed fetch floor: %s", failed.Body.String())
 	}
 }
 

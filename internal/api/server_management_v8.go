@@ -50,6 +50,7 @@ func (s *Server) registerManagementV8Routes() {
 	v8.POST("/credentials/refresh", s.mgmt.RefreshAuthFiles)
 	v8.GET("/credentials/usage", s.mgmt.GetCredentialUsage)
 	v8.POST("/credentials/usage/refresh", s.mgmt.RefreshCredentialUsage)
+	v8.POST("/credentials/usage/reset", s.mgmt.ResetCredentialUsage)
 	v8.POST("/oauth/import", s.mgmt.ImportOAuthV8)
 	v8.GET("/oauth/auth-url", s.mgmt.StartOAuthV8)
 	v8.GET("/oauth/status", s.mgmt.GetAuthStatus)

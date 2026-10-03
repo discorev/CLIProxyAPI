@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,26 +20,25 @@ import (
 type UsageHTTPRequest func(context.Context, *cliproxyauth.Auth, *http.Request) (*http.Response, error)
 
 func FetchClaudeUsage(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest) (cliproxyauth.UsageFetchResult, error) {
-	headers := http.Header{
-		"User-Agent":     {"claude-cli/2.1.280 (external, cli)"},
-		"Content-Type":   {"application/json"},
-		"Anthropic-Beta": {"oauth-2025-04-20"},
-	}
+	headers := claudeUsageHeaders()
 	result := cliproxyauth.UsageFetchResult{Raw: make(map[string]json.RawMessage)}
 	body, err := fetchUsageJSON(ctx, auth, request, "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1", headers)
 	if err != nil {
 		return result, fmt.Errorf("claude usage: %w", err)
 	}
 	result.Raw["usage"] = body
+	result.Resets = ParseClaudeResetGrants(body)
 	result.Windows, err = ParseClaudeSubscriptionUsage(body)
 	if err != nil {
 		return result, err
 	}
-	profile, errProfile := fetchUsageJSON(ctx, auth, request, "https://api.anthropic.com/api/oauth/profile", headers)
-	if errProfile != nil {
-		result.LastError = fmt.Sprintf("claude profile: %v", errProfile)
-	} else {
-		result.Raw["profile"] = profile
+	if !cliproxyauth.UsageFetchOptionsFromContext(ctx).SkipProfile {
+		profile, errProfile := fetchUsageJSON(ctx, auth, request, "https://api.anthropic.com/api/oauth/profile", headers)
+		if errProfile != nil {
+			setUsageAncillaryError(&result, fmt.Errorf("claude profile: %w", errProfile))
+		} else {
+			result.Raw["profile"] = profile
+		}
 	}
 	return result, nil
 }
@@ -46,39 +46,38 @@ func FetchClaudeUsage(ctx context.Context, auth *cliproxyauth.Auth, request Usag
 func FetchCodexUsage(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest) (cliproxyauth.UsageFetchResult, error) {
 	accountID, _ := auth.Metadata["account_id"].(string)
 	accountID = strings.TrimSpace(accountID)
-	headers := http.Header{
-		"User-Agent":         {"codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)"},
-		"Content-Type":       {"application/json"},
-		"Chatgpt-Account-Id": {accountID},
-	}
+	headers := codexUsageHeaders(accountID)
 	result := cliproxyauth.UsageFetchResult{Raw: make(map[string]json.RawMessage)}
 	body, err := fetchUsageJSON(ctx, auth, request, "https://chatgpt.com/backend-api/wham/usage", headers)
 	if err != nil {
 		return result, fmt.Errorf("codex usage: %w", err)
 	}
 	result.Raw["usage"] = body
-	result.Windows, err = ParseCodexSubscriptionUsage(body, time.Now())
+	options := cliproxyauth.UsageFetchOptionsFromContext(ctx)
+	result.Windows, err = ParseCodexSubscriptionUsage(body, options.Now)
 	if err != nil {
 		return result, err
 	}
-	var ancillaryErrors []error
-	subscription, errSubscription := fetchUsageJSON(ctx, auth, request, "https://chatgpt.com/backend-api/subscriptions?"+url.Values{"account_id": {accountID}}.Encode(), headers)
-	if errSubscription != nil {
-		ancillaryErrors = append(ancillaryErrors, fmt.Errorf("codex subscription: %w", errSubscription))
-	} else {
-		result.Raw["subscription"] = subscription
+	if !options.SkipSubscription {
+		subscription, errSubscription := fetchUsageJSON(ctx, auth, request, "https://chatgpt.com/backend-api/subscriptions?"+url.Values{"account_id": {accountID}}.Encode(), headers)
+		if errSubscription != nil {
+			setUsageAncillaryError(&result, fmt.Errorf("codex subscription: %w", errSubscription))
+			if result.RateLimit != nil {
+				return result, nil
+			}
+		} else {
+			result.Raw["subscription"] = subscription
+		}
 	}
 	headers.Set("Accept", "application/json")
 	headers.Set("OpenAI-Beta", "codex-1")
 	headers.Set("Originator", "Codex Desktop")
 	credits, errCredits := fetchUsageJSON(ctx, auth, request, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", headers)
 	if errCredits != nil {
-		ancillaryErrors = append(ancillaryErrors, fmt.Errorf("codex reset credits: %w", errCredits))
+		setUsageAncillaryError(&result, fmt.Errorf("codex reset credits: %w", errCredits))
 	} else {
 		result.Raw["reset_credits"] = credits
-	}
-	if errAncillary := errors.Join(ancillaryErrors...); errAncillary != nil {
-		result.LastError = errAncillary.Error()
+		result.Resets = ParseCodexResetCredits(credits)
 	}
 	return result, nil
 }
@@ -104,7 +103,7 @@ func fetchUsageJSON(ctx context.Context, auth *cliproxyauth.Auth, request UsageH
 		}
 	}()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("upstream status %d", response.StatusCode)
+		return nil, &cliproxyauth.UsageHTTPError{StatusCode: response.StatusCode, RetryAfter: usageRetryAfter(response.Header.Get("Retry-After"), cliproxyauth.UsageFetchOptionsFromContext(ctx).Now)}
 	}
 	body, errRead := io.ReadAll(response.Body)
 	if errRead != nil {
@@ -114,4 +113,45 @@ func fetchUsageJSON(ctx context.Context, auth *cliproxyauth.Auth, request UsageH
 		return nil, errors.New("invalid JSON response")
 	}
 	return body, nil
+}
+
+func setUsageAncillaryError(result *cliproxyauth.UsageFetchResult, err error) {
+	if result.LastError != "" {
+		result.LastError += "; "
+	}
+	result.LastError += err.Error()
+	var httpError *cliproxyauth.UsageHTTPError
+	if errors.As(err, &httpError) && httpError.StatusCode == http.StatusTooManyRequests {
+		result.RateLimit = httpError
+	}
+}
+
+func usageRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds > 0 {
+			return time.Duration(min(seconds, int64(cliproxyauth.Usage429Maximum/time.Second))) * time.Second
+		}
+		return 0
+	}
+	if until, err := http.ParseTime(value); err == nil && until.After(now) {
+		return min(until.Sub(now), cliproxyauth.Usage429Maximum)
+	}
+	return 0
+}
+
+func claudeUsageHeaders() http.Header {
+	return http.Header{
+		"User-Agent":     {"claude-cli/2.1.280 (external, cli)"},
+		"Content-Type":   {"application/json"},
+		"Anthropic-Beta": {"oauth-2025-04-20"},
+	}
+}
+
+func codexUsageHeaders(accountID string) http.Header {
+	return http.Header{
+		"User-Agent":         {"codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)"},
+		"Content-Type":       {"application/json"},
+		"Chatgpt-Account-Id": {accountID},
+	}
 }

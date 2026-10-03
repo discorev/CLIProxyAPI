@@ -64,6 +64,13 @@ func (e *CodexAutoExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.
 	return e.httpExec.HttpRequest(ctx, auth, req)
 }
 
+func (e *CodexAutoExecutor) ApplyReset(ctx context.Context, auth *cliproxyauth.Auth, request cliproxyauth.ResetRequest) (cliproxyauth.ResetResult, error) {
+	if e == nil || e.httpExec == nil {
+		return cliproxyauth.ResetResult{Result: "unavailable", NotSent: true}, fmt.Errorf("codex auto executor: http executor is nil")
+	}
+	return e.httpExec.ApplyReset(ctx, auth, request)
+}
+
 func (e *CodexAutoExecutor) FetchUsage(ctx context.Context, auth *cliproxyauth.Auth) (cliproxyauth.UsageFetchResult, error) {
 	if e == nil || e.httpExec == nil {
 		return cliproxyauth.UsageFetchResult{}, fmt.Errorf("codex auto executor: http executor is nil")

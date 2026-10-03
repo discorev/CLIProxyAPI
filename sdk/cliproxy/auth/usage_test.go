@@ -148,6 +148,7 @@ func TestRefreshUsageFailureBackoffAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	failure = true
+	now = now.Add(UsageMinFetchInterval)
 	got, err := manager.RefreshUsage(context.Background(), "a")
 	if err == nil || got.LastError != "upstream status 429" || len(got.Windows) != 1 || len(got.Raw) != 1 || got.Refreshing {
 		t.Fatalf("failure discarded usage: %+v, %v", got, err)
@@ -252,7 +253,7 @@ func TestUsageSweepClockAndLifecycle(t *testing.T) {
 	})
 }
 
-func TestUsageRefreshReplacesOlderDataAtSameClockTick(t *testing.T) {
+func TestUsageRefreshRespectsFloorAtSameClockTick(t *testing.T) {
 	manager := NewManager(nil, nil, nil)
 	registerUsageAuth(t, manager, "a", "claude")
 	now := time.Unix(1800000000, 0)
@@ -268,12 +269,16 @@ func TestUsageRefreshReplacesOlderDataAtSameClockTick(t *testing.T) {
 	if _, err := manager.RefreshUsage(context.Background(), "a"); err != nil {
 		t.Fatal(err)
 	}
-	if got := manager.UsageSnapshot("a"); got.Windows[0].UsedPercent != 20 {
-		t.Fatalf("older fetch survived a clock tie: %+v", got)
+	if got := manager.UsageSnapshot("a"); got.Windows[0].UsedPercent != 40 {
+		t.Fatalf("same-tick refresh bypassed floor: %+v", got)
+	}
+	now = now.Add(UsageMinFetchInterval)
+	if got, err := manager.RefreshUsage(context.Background(), "a"); err != nil || got.Windows[0].UsedPercent != 20 {
+		t.Fatalf("elapsed floor did not fetch: %+v, %v", got, err)
 	}
 }
 
-func TestUsageCanceledFetchRemainsDue(t *testing.T) {
+func TestUsageCanceledFetchRemainsDueAfterFloor(t *testing.T) {
 	for _, previousError := range []string{"", "previous upstream failure"} {
 		t.Run(previousError, func(t *testing.T) {
 			manager := NewManager(nil, nil, nil)
@@ -292,7 +297,7 @@ func TestUsageCanceledFetchRemainsDue(t *testing.T) {
 			manager.fetchUsage(ctx, auth, fetcher, flight)
 			<-flight.done
 			entry := manager.usageSnapshot("a")
-			if !errors.Is(flight.err, context.Canceled) || entry.LastError != previousError || entry.Refreshing || !entry.retryAt.IsZero() || !usageRefreshDue(entry, time.Now()) {
+			if !errors.Is(flight.err, context.Canceled) || entry.LastError != previousError || entry.Refreshing || !entry.retryAt.IsZero() || usageRefreshDue(entry, time.Now()) || !usageRefreshDue(entry, entry.NextFetchAt) {
 				t.Fatalf("cancellation became a failure: entry = %+v, err = %v", entry, flight.err)
 			}
 			if manager.usage.flights["a"] != nil {
@@ -404,6 +409,8 @@ func TestUsageAccountReplacementInvalidatesCacheAndFlight(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					store := &schedulerLoadStore{}
 					manager := NewManager(store, nil, nil)
+					now := time.Now()
+					manager.usage.now = func() time.Time { return now }
 					auth, err := manager.Register(context.Background(), &Auth{
 						ID: "a", Provider: identity.provider,
 						Metadata: map[string]interface{}{"access_token": "fake-token", identity.key: "old-account"},
@@ -442,6 +449,7 @@ func TestUsageAccountReplacementInvalidatesCacheAndFlight(t *testing.T) {
 					if _, err := manager.RefreshUsage(context.Background(), "a"); err != nil {
 						t.Fatal(err)
 					}
+					now = now.Add(UsageMinFetchInterval)
 					go func() { _, _ = manager.RefreshUsage(context.Background(), "a") }()
 					synctest.Wait()
 					oldFlight := manager.usage.flights["a"]
@@ -496,7 +504,7 @@ func TestUsagePartialFailureRetainsRawAndRetriesDespiteHeaders(t *testing.T) {
 			t.Fatal(err)
 		}
 		previous := manager.usageSnapshot("a")
-		now = now.Add(time.Minute)
+		now = now.Add(UsageMinFetchInterval)
 		partial, err := manager.RefreshUsage(context.Background(), "a")
 		if err != nil || partial.LastError == "" || !partial.FetchedAt.Equal(now) || string(partial.Raw["usage"]) != `{"version":2}` || string(previous.Raw["usage"]) != `{"version":1}` {
 			t.Fatalf("partial fetch not merged independently: %+v, %v", partial, err)

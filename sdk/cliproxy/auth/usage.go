@@ -23,16 +23,21 @@ type UsageWindow struct {
 
 // CredentialUsage is an in-memory snapshot, never part of persisted Auth state.
 type CredentialUsage struct {
-	Raw        map[string]json.RawMessage `json:"raw"`
-	FetchedAt  time.Time                  `json:"fetched_at"`
-	Windows    []UsageWindow              `json:"windows"`
-	ObservedAt time.Time                  `json:"observed_at"`
-	Refreshing bool                       `json:"refreshing"`
-	LastError  string                     `json:"last_error"`
+	Raw           map[string]json.RawMessage `json:"raw"`
+	Resets        *CredentialResets          `json:"resets"`
+	FetchedAt     time.Time                  `json:"fetched_at"`
+	Windows       []UsageWindow              `json:"windows"`
+	ObservedAt    time.Time                  `json:"observed_at"`
+	Refreshing    bool                       `json:"refreshing"`
+	LastError     string                     `json:"last_error"`
+	NextFetchAt   time.Time                  `json:"next_fetch_at"`
+	CooldownUntil time.Time                  `json:"cooldown_until"`
 }
 
 // UsageFetchResult retains ancillary endpoint failures without discarding usage.
 type UsageFetchResult struct {
+	RateLimit *UsageHTTPError
+	Resets    *CredentialResets
 	Raw       map[string]json.RawMessage
 	Windows   []UsageWindow
 	LastError string
@@ -60,15 +65,23 @@ func UsageFetchable(auth *Auth) bool {
 
 type usageEntry struct {
 	CredentialUsage
-	windowVersions map[string]uint64
-	headerVersion  uint64
-	retryAt        time.Time
+	windowVersions     map[string]uint64
+	headerVersion      uint64
+	retryAt            time.Time
+	fetchStartedAt     time.Time
+	resetRetryExpiry   time.Time
+	lastFetchStartedAt time.Time
+	rawFetchedAt       map[string]time.Time
+	rateLimitLevel     int
+	waitForToken       bool
+	failedTokenHash    [32]byte
 }
 
 type usageFlight struct {
-	done     chan struct{}
-	snapshot CredentialUsage
-	err      error
+	startedAt time.Time
+	done      chan struct{}
+	snapshot  CredentialUsage
+	err       error
 }
 
 type usageTicker interface {
@@ -81,12 +94,14 @@ type realUsageTicker struct{ *time.Ticker }
 func (t realUsageTicker) Ticks() <-chan time.Time { return t.C }
 
 type usageCache struct {
-	mu        sync.RWMutex
-	entries   map[string]*usageEntry
-	flights   map[string]*usageFlight
-	cancel    context.CancelFunc
-	now       func() time.Time
-	newTicker func() usageTicker
+	resetCancel context.CancelFunc
+	resets      map[string]*resetAttempt
+	mu          sync.RWMutex
+	entries     map[string]*usageEntry
+	flights     map[string]*usageFlight
+	cancel      context.CancelFunc
+	now         func() time.Time
+	newTicker   func() usageTicker
 }
 
 func (u *usageCache) timeNow() time.Time {
@@ -109,6 +124,7 @@ func cloneCredentialUsage(s CredentialUsage) CredentialUsage {
 		s.Raw[name] = append(json.RawMessage(nil), raw...)
 	}
 	s.Windows = append([]UsageWindow{}, s.Windows...)
+	s.Resets = cloneCredentialResets(s.Resets)
 	return s
 }
 
@@ -120,6 +136,7 @@ func cloneUsageEntry(s *usageEntry) *usageEntry {
 	// Raw bodies are immutable internally; only public snapshots deep-copy them.
 	next.Windows = append([]UsageWindow{}, s.Windows...)
 	next.windowVersions = maps.Clone(s.windowVersions)
+	next.rawFetchedAt = maps.Clone(s.rawFetchedAt)
 	return &next
 }
 
@@ -155,7 +172,7 @@ func usageAccountChanged(previous, current *Auth) bool {
 	var keys []string
 	switch provider {
 	case "claude":
-		keys = []string{"email", "account_uuid"}
+		keys = []string{"email", "account_uuid", "organization_uuid"}
 	case "codex":
 		keys = []string{"account_id", "email"}
 	default:
@@ -176,6 +193,9 @@ func (m *Manager) removeUsageLocked(id string) {
 	m.usage.mu.Lock()
 	delete(m.usage.entries, id)
 	delete(m.usage.flights, id)
+	if state := m.usage.resets[id]; state != nil && !state.inFlight {
+		delete(m.usage.resets, id)
+	}
 	m.usage.mu.Unlock()
 }
 
@@ -188,6 +208,9 @@ func (m *Manager) RefreshUsage(ctx context.Context, authID string) (CredentialUs
 	flight, auth, fetcher, leader, err := m.beginUsageRefresh(authID, false)
 	if err != nil {
 		return emptyCredentialUsage(), err
+	}
+	if flight == nil {
+		return m.UsageSnapshot(authID), nil
 	}
 	if leader {
 		go m.fetchUsage(context.WithoutCancel(ctx), auth, fetcher, flight)
@@ -220,6 +243,9 @@ func (m *Manager) beginUsageRefresh(id string, sweep bool) (*usageFlight, *Auth,
 		return flight, nil, nil, false, nil
 	}
 	entry := m.usage.entries[id]
+	if usageFetchBlocked(entry, auth, m.usage.timeNow()) {
+		return nil, nil, nil, false, nil
+	}
 	if sweep && (auth.Disabled || auth.Status == StatusDisabled || !usageRefreshDue(entry, m.usage.timeNow())) {
 		return nil, nil, nil, false, nil
 	}
@@ -227,10 +253,12 @@ func (m *Manager) beginUsageRefresh(id string, sweep bool) (*usageFlight, *Auth,
 		m.usage.entries = make(map[string]*usageEntry)
 		m.usage.flights = make(map[string]*usageFlight)
 	}
-	flight := &usageFlight{done: make(chan struct{})}
+	flight := &usageFlight{done: make(chan struct{}), startedAt: m.usage.timeNow()}
 	m.usage.flights[id] = flight
 	next := cloneUsageEntry(entry)
 	next.Refreshing = true
+	next.lastFetchStartedAt = flight.startedAt
+	next.NextFetchAt = flight.startedAt.Add(UsageMinFetchInterval)
 	m.usage.entries[id] = next
 	return flight, auth.Clone(), fetcher, true, nil
 }
@@ -239,6 +267,7 @@ func (m *Manager) fetchUsage(ctx context.Context, auth *Auth, fetcher UsageFetch
 	var headerVersion uint64
 	if entry := m.usageSnapshot(auth.ID); entry != nil {
 		headerVersion = entry.headerVersion
+		ctx = context.WithValue(ctx, usageFetchOptionsKey{}, usageFetchOptions(entry, flight.startedAt))
 	}
 	if rt := m.roundTripperFor(auth); rt != nil {
 		ctx = context.WithValue(ctx, roundTripperContextKey{}, rt)
@@ -253,26 +282,31 @@ func (m *Manager) fetchUsage(ctx context.Context, auth *Auth, fetcher UsageFetch
 	m.usage.mu.Lock()
 	next := cloneUsageEntry(m.usage.entries[auth.ID])
 	next.Refreshing = false
+	retryDelay := usageFailureRetryDelay(next, finished)
 	switch {
 	case canceled:
 		// Cancellation is not an upstream failure; retain existing error/retry state.
 	case errFetch != nil:
 		next.LastError = errFetch.Error()
-		next.retryAt = finished.Add(15 * time.Minute)
+		next.Resets = nil
 	default:
 		next.Raw = maps.Clone(next.Raw)
 		if next.Raw == nil {
 			next.Raw = make(map[string]json.RawMessage)
 		}
+		if next.rawFetchedAt == nil {
+			next.rawFetchedAt = make(map[string]time.Time)
+		}
 		for name, raw := range result.Raw {
+			next.rawFetchedAt[name] = finished
 			next.Raw[name] = append(json.RawMessage(nil), raw...)
 		}
 		next.FetchedAt = finished
+		next.fetchStartedAt = flight.startedAt
+		// Only successful inventory parsing establishes spendable resets;
+		// unrelated ancillary errors remain display-only for reset eligibility.
+		next.Resets = cloneCredentialResets(result.Resets)
 		next.LastError = result.LastError
-		next.retryAt = time.Time{}
-		if result.LastError != "" {
-			next.retryAt = finished.Add(15 * time.Minute)
-		}
 		windows := append([]UsageWindow{}, result.Windows...)
 		versions := make(map[string]uint64, len(windows))
 		// A response observed while these HTTP calls were in flight is newer
@@ -285,6 +319,9 @@ func (m *Manager) fetchUsage(ctx context.Context, auth *Auth, fetcher UsageFetch
 			}
 		}
 		next.Windows, next.windowVersions = windows, versions
+	}
+	if !canceled {
+		applyUsageFetchRate(next, auth, result, errFetch, finished, retryDelay)
 	}
 	// Removal invalidates a flight. A late response cannot resurrect the entry
 	// or overwrite a new credential registered under the same ID.
