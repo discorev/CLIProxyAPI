@@ -44,6 +44,8 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	switch strings.ToLower(strings.TrimSpace(cfg.Routing.Strategy)) {
 	case "weighted-round-robin", "weightedroundrobin", "wrr":
 		state.strategy = "weighted-round-robin"
+	case "intelligent-fill", "intelligentfill", "if":
+		state.strategy = "intelligent-fill"
 	case "fill-first", "fillfirst", "ff":
 		state.strategy = "fill-first"
 	}
@@ -62,11 +64,13 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	return state
 }
 
-func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
+func newRoutingSelector(state routingRuntimeState, manager *coreauth.Manager) coreauth.Selector {
 	var selector coreauth.Selector
 	switch state.strategy {
 	case "weighted-round-robin":
 		selector = &coreauth.WeightedRoundRobinSelector{}
+	case "intelligent-fill":
+		selector = coreauth.NewIntelligentFillSelector(manager)
 	case "fill-first":
 		selector = &coreauth.FillFirstSelector{}
 	default:
@@ -215,7 +219,7 @@ func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) b
 	}
 	routingState := normalizedRoutingRuntimeState(commit.cfg)
 	if s.appliedRoutingState == nil || *s.appliedRoutingState != routingState {
-		s.coreManager.SetSelector(newRoutingSelector(routingState))
+		s.coreManager.SetSelector(newRoutingSelector(routingState, s.coreManager))
 		s.appliedRoutingState = &routingState
 	}
 	s.applyRetryConfig(commit.cfg)
@@ -224,7 +228,19 @@ func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) b
 		return false
 	}
 	s.coreManager.SetOAuthModelAlias(commit.cfg.OAuthModelAlias)
+	s.applyUsageSweepConfig(commit.cfg)
 	return true
+}
+
+func (s *Service) applyUsageSweepConfig(cfg *config.Config) {
+	if s.coreManager == nil {
+		return
+	}
+	if cfg != nil && !cfg.Home.Enabled && normalizedRoutingRuntimeState(cfg).strategy == "intelligent-fill" {
+		s.coreManager.StartUsageSweep()
+	} else {
+		s.coreManager.StopUsageSweep()
+	}
 }
 
 func (s *Service) updateServerClientsContext(ctx context.Context, cfg *config.Config) bool {

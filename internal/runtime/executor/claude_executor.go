@@ -225,6 +225,10 @@ func (e *ClaudeExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Au
 	return nil
 }
 
+func (e *ClaudeExecutor) FetchUsage(ctx context.Context, auth *cliproxyauth.Auth) (cliproxyauth.UsageFetchResult, error) {
+	return helps.FetchClaudeUsage(ctx, auth, e.HttpRequest)
+}
+
 // HttpRequest injects Claude credentials into the request and executes it.
 func (e *ClaudeExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
 	if req == nil {
