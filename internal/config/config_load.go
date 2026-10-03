@@ -221,7 +221,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		return nil, errLayout
 	}
 	if changed {
-		if errWrite := os.WriteFile(configFile, cleaned, 0600); errWrite != nil {
+		if errWrite := WriteConfigFile(configFile, cleaned, 0600); errWrite != nil {
 			return nil, fmt.Errorf("clean conflicting config fields: %w", errWrite)
 		}
 	}
