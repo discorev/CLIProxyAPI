@@ -110,20 +110,7 @@ func WriteConfig(path string, data []byte) error {
 			return err
 		}
 	}
-	data = config.NormalizeCommentIndentation(data)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	if _, errWrite := f.Write(data); errWrite != nil {
-		_ = f.Close()
-		return errWrite
-	}
-	if errSync := f.Sync(); errSync != nil {
-		_ = f.Close()
-		return errSync
-	}
-	return f.Close()
+	return config.WriteConfigFile(path, config.NormalizeCommentIndentation(data), 0644)
 }
 
 func (h *Handler) PutConfigYAML(c *gin.Context) {
