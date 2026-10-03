@@ -130,6 +130,10 @@ access:
 # or within the credit's last 15 minutes. Claude grants apply only when all Claude
 # credentials are exhausted with more than 60 minutes to recovery, when an expiring
 # grant would lapse before recovery, or in its last 15 minutes if no limit is required.
+# Enable auto-apply on only one instance per set of credentials. Each instance tracks
+# resets in memory, so two instances sharing credentials can both decide to spend.
+# Automatic resets send an idempotency key derived from the account and the reset, so
+# matching decisions use the same key, but upstream de-duplication is not guaranteed.
 # reset-credits:
 #   auto-apply: false
 #   dry-run: false # log which resets auto-apply would use, without sending them; takes precedence over auto-apply

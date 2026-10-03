@@ -161,3 +161,48 @@ func TestSubscriptionResetCodexHTTPRefusals(t *testing.T) {
 		})
 	}
 }
+
+func TestSubscriptionResetSendsIdempotencyKey(t *testing.T) {
+	const key = "5b3d7a6c-1f2e-5a4b-9c8d-0e1f2a3b4c5d"
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			var sent []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]string
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				sent = append(sent, body["redeem_request_id"]+body["request_id"])
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"result":"reset"}`))
+			}))
+			defer server.Close()
+			auth := &cliproxyauth.Auth{Provider: provider, Metadata: map[string]interface{}{"access_token": "fake-token", "account_id": "fake-account", "organization_uuid": "12345678-1234-1234-1234-123456789abc"}}
+			var applier cliproxyauth.ResetApplier
+			if provider == "codex" {
+				e := NewCodexExecutor(nil)
+				e.resetBaseURL = server.URL
+				applier = e
+			} else {
+				e := NewClaudeExecutor(nil)
+				e.resetBaseURL = server.URL
+				applier = e
+			}
+			for range 2 {
+				if _, err := applier.ApplyReset(context.Background(), auth, cliproxyauth.ResetRequest{GrantID: "grant-1", IdempotencyKey: key}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// An empty key (manual reset) falls back to a fresh random ID.
+			if _, err := applier.ApplyReset(context.Background(), auth, cliproxyauth.ResetRequest{GrantID: "grant-1"}); err != nil {
+				t.Fatal(err)
+			}
+			if len(sent) != 3 || sent[0] != key || sent[1] != key || sent[2] == key {
+				t.Fatalf("request IDs = %v", sent)
+			}
+			if _, errParse := uuid.Parse(sent[2]); errParse != nil {
+				t.Fatalf("random fallback is not a UUID: %q", sent[2])
+			}
+		})
+	}
+}

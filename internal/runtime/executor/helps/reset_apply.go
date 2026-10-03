@@ -31,18 +31,18 @@ func ResetHTTPTransport(cfg *config.Config, prepare func(*http.Request, *cliprox
 	}
 }
 
-func ApplyCodexReset(ctx context.Context, auth *cliproxyauth.Auth, baseURL string, request UsageHTTPRequest) (cliproxyauth.ResetResult, error) {
+func ApplyCodexReset(ctx context.Context, auth *cliproxyauth.Auth, claim cliproxyauth.ResetRequest, baseURL string, request UsageHTTPRequest) (cliproxyauth.ResetResult, error) {
 	if !cliproxyauth.UsageFetchable(auth) || !strings.EqualFold(auth.Provider, "codex") {
 		return resetRefusal(cliproxyauth.ErrUsageNotFetchable)
 	}
 	if baseURL == "" {
 		baseURL = "https://chatgpt.com"
 	}
-	requestID, errID := uuid.NewRandom()
+	requestID, errID := resetRequestID(claim.IdempotencyKey)
 	if errID != nil {
-		return resetRefusal(errors.New("could not create reset request ID"))
+		return resetRefusal(errID)
 	}
-	body, _ := json.Marshal(map[string]string{"redeem_request_id": requestID.String()})
+	body, _ := json.Marshal(map[string]string{"redeem_request_id": requestID})
 	accountID, _ := auth.Metadata["account_id"].(string)
 	return sendReset(ctx, auth, strings.TrimRight(baseURL, "/")+"/backend-api/wham/rate-limit-reset-credits/consume", body, codexUsageHeaders(strings.TrimSpace(accountID)), request, false)
 }
@@ -64,12 +64,28 @@ func ApplyClaudeReset(ctx context.Context, auth *cliproxyauth.Auth, claim clipro
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
+	requestID, errID := resetRequestID(claim.IdempotencyKey)
+	if errID != nil {
+		return resetRefusal(errID)
+	}
+	body, _ := json.Marshal(map[string]string{"program": "cedar_ember", "grant_id": claim.GrantID, "request_id": requestID})
+	return sendReset(ctx, auth, strings.TrimRight(baseURL, "/")+"/api/organizations/"+orgID+"/reset_rate_limits", body, claudeUsageHeaders(), request, true)
+}
+
+// resetRequestID uses the caller's idempotency key when set (automatic resets),
+// otherwise a random ID (manual resets are explicit, one-off actions).
+func resetRequestID(key string) (string, error) {
+	if key = strings.TrimSpace(key); key != "" {
+		if _, errParse := uuid.Parse(key); errParse != nil {
+			return "", errors.New("invalid reset idempotency key")
+		}
+		return key, nil
+	}
 	requestID, errID := uuid.NewRandom()
 	if errID != nil {
-		return resetRefusal(errors.New("could not create reset request ID"))
+		return "", errors.New("could not create reset request ID")
 	}
-	body, _ := json.Marshal(map[string]string{"program": "cedar_ember", "grant_id": claim.GrantID, "request_id": requestID.String()})
-	return sendReset(ctx, auth, strings.TrimRight(baseURL, "/")+"/api/organizations/"+orgID+"/reset_rate_limits", body, claudeUsageHeaders(), request, true)
+	return requestID.String(), nil
 }
 
 func resetRefusal(err error) (cliproxyauth.ResetResult, error) {

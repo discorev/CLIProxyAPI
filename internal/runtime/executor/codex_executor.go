@@ -27,6 +27,6 @@ func (e *CodexExecutor) FetchUsage(ctx context.Context, auth *cliproxyauth.Auth)
 	return helps.FetchCodexUsage(ctx, auth, e.HttpRequest)
 }
 
-func (e *CodexExecutor) ApplyReset(ctx context.Context, auth *cliproxyauth.Auth, _ cliproxyauth.ResetRequest) (cliproxyauth.ResetResult, error) {
-	return helps.ApplyCodexReset(ctx, auth, e.resetBaseURL, helps.ResetHTTPTransport(e.cfg, e.PrepareRequest))
+func (e *CodexExecutor) ApplyReset(ctx context.Context, auth *cliproxyauth.Auth, request cliproxyauth.ResetRequest) (cliproxyauth.ResetResult, error) {
+	return helps.ApplyCodexReset(ctx, auth, request, e.resetBaseURL, helps.ResetHTTPTransport(e.cfg, e.PrepareRequest))
 }

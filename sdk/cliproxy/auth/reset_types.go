@@ -51,6 +51,10 @@ type ResetGrant struct {
 type ResetRequest struct {
 	GrantID        string
 	OrganizationID string
+	// IdempotencyKey is sent as the upstream request ID. Automatic resets derive
+	// it from the account and the reset being spent, so separate proxy
+	// instances making the same decision send the same key. Empty means random.
+	IdempotencyKey string
 }
 
 type ResetResult struct {

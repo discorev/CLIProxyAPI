@@ -2,7 +2,11 @@ package auth
 
 import (
 	"slices"
+	"strconv"
+	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type resetChoice struct {
@@ -235,4 +239,39 @@ func usageFailureRetryDelay(entry *usageEntry, now time.Time) time.Duration {
 		return UsageMinFetchInterval
 	}
 	return UsageFailureBackoff
+}
+
+// resetIdempotencyKey identifies one automatic spend of one reset. It covers
+// the account, the credit or grant, and, for multi-use grants, how many uses
+// remain, so a later legitimate use of the same grant gets a new key. It is
+// deliberately independent of rule, auth ID and time, so two instances that
+// share credentials derive the same key for the same decision.
+func resetIdempotencyKey(auth *Auth, entry CredentialUsage, choice resetChoice) string {
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	parts := []string{"cliproxy-reset", provider}
+	var identityKeys []string
+	switch provider {
+	case "claude":
+		identityKeys = []string{"account_uuid", "organization_uuid", "email"}
+	case "codex":
+		identityKeys = []string{"account_id", "email"}
+	}
+	for _, key := range identityKeys {
+		value, _ := auth.Metadata[key].(string)
+		parts = append(parts, strings.TrimSpace(value))
+	}
+	if choice.grantID != "" {
+		left := -1
+		if entry.Resets != nil && entry.Resets.ClaudeResetStatus != nil {
+			for _, grant := range entry.Resets.Grants {
+				if grant.ID == choice.grantID {
+					left = grant.ResetsLeft
+				}
+			}
+		}
+		parts = append(parts, "grant", choice.grantID, strconv.Itoa(left))
+	} else {
+		parts = append(parts, "credit", choice.creditID, choice.expires.UTC().Format(time.RFC3339))
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(strings.Join(parts, "\x00"))).String()
 }

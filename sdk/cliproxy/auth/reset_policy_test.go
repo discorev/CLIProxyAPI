@@ -3,6 +3,8 @@ package auth
 import (
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 var resetTestNow = time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
@@ -177,5 +179,45 @@ func TestResetRefreshFreshness(t *testing.T) {
 	entry := &usageEntry{CredentialUsage: resetTestEntry("codex", 100, time.Hour, time.Hour), retryAt: resetTestNow.Add(time.Minute)}
 	if resetRefreshDue(entry, resetTestNow, true) {
 		t.Fatal("lock bypassed fetch backoff")
+	}
+}
+
+func TestResetIdempotencyKeyIsSharedAcrossInstances(t *testing.T) {
+	expires := time.Date(2026, 10, 4, 3, 24, 0, 0, time.UTC)
+	codex := func(id string) *Auth {
+		return &Auth{ID: id, Provider: "codex", Metadata: map[string]any{"account_id": "acct-1", "email": "a@example.com", "access_token": "t-" + id}}
+	}
+	credit := resetChoice{creditID: "credit-1", expires: expires, rule: "last_chance"}
+	// Two instances may name the credential differently, hold different tokens
+	// and reach the decision via different rules: the key must still match.
+	first := resetIdempotencyKey(codex("instance-a.json"), CredentialUsage{}, credit)
+	second := resetIdempotencyKey(codex("instance-b.json"), CredentialUsage{}, resetChoice{creditID: "credit-1", expires: expires, rule: "exhausted"})
+	if first != second {
+		t.Fatalf("same decision produced different keys: %s vs %s", first, second)
+	}
+	if other := resetIdempotencyKey(codex("instance-a.json"), CredentialUsage{}, resetChoice{creditID: "credit-2", expires: expires, rule: "last_chance"}); other == first {
+		t.Fatal("a different credit reused the key")
+	}
+	otherAccount := codex("instance-a.json")
+	otherAccount.Metadata["account_id"] = "acct-2"
+	if resetIdempotencyKey(otherAccount, CredentialUsage{}, credit) == first {
+		t.Fatal("a different account reused the key")
+	}
+
+	claude := &Auth{ID: "c.json", Provider: "claude", Metadata: map[string]any{"account_uuid": "u-1", "organization_uuid": "o-1"}}
+	usage := func(left int) CredentialUsage {
+		return CredentialUsage{Resets: &CredentialResets{ClaudeResetStatus: &ClaudeResetStatus{Grants: []ResetGrant{{ID: "grant-1", ResetsLeft: left}}}}}
+	}
+	grant := resetChoice{grantID: "grant-1", rule: "all_exhausted"}
+	twoLeft := resetIdempotencyKey(claude, usage(2), grant)
+	if twoLeft != resetIdempotencyKey(claude, usage(2), resetChoice{grantID: "grant-1", rule: "last_chance"}) {
+		t.Fatal("same grant use produced different keys")
+	}
+	// A multi-use grant's next legitimate use must not be deduplicated upstream.
+	if twoLeft == resetIdempotencyKey(claude, usage(1), grant) {
+		t.Fatal("next use of a multi-use grant reused the key")
+	}
+	if _, err := uuid.Parse(twoLeft); err != nil {
+		t.Fatalf("key is not a UUID: %q", twoLeft)
 	}
 }

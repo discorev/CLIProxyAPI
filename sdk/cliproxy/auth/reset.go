@@ -138,6 +138,9 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 	}
 	auth = current
 	request := ResetRequest{GrantID: choice.grantID}
+	if choice.rule != "manual" {
+		request.IdempotencyKey = resetIdempotencyKey(auth, entry, choice)
+	}
 	var profile struct {
 		Organization struct {
 			UUID string `json:"uuid"`
