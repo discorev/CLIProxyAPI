@@ -115,6 +115,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	auth.RegistrationEpoch = m.authEpochs[auth.ID]
 	auth.Generation = 1
 	authClone := auth.Clone()
+	m.invalidateUsageLocked(m.auths[auth.ID], authClone)
 	m.auths[auth.ID] = authClone
 	m.mu.Unlock()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
@@ -265,6 +266,7 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 		}
 	}
 	authClone := auth.Clone()
+	m.invalidateUsageLocked(m.auths[auth.ID], authClone)
 	m.auths[auth.ID] = authClone
 	m.mu.Unlock()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
@@ -309,6 +311,7 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 	}
 	provider := strings.TrimSpace(existing.Provider)
 	delete(m.auths, id)
+	m.removeUsageLocked(existing, "removed", "")
 	if m.modelPoolOffsets != nil {
 		delete(m.modelPoolOffsets, id)
 	}
@@ -390,6 +393,7 @@ func (m *Manager) Load(ctx context.Context) error {
 		m.authEpochs[auth.ID] = max(m.authEpochs[auth.ID], auth.RegistrationEpoch) + 1
 		auth.RegistrationEpoch = m.authEpochs[auth.ID]
 		auth.Generation = 1
+		m.invalidateUsageLocked(previousAuths[auth.ID], auth)
 		m.auths[auth.ID] = auth.Clone()
 	}
 
@@ -400,6 +404,7 @@ func (m *Manager) Load(ctx context.Context) error {
 	var removedTombstones []removalTombstone
 	for prevID := range previousAuths {
 		if _, exists := m.auths[prevID]; !exists {
+			m.removeUsageLocked(previousAuths[prevID], "removed", "")
 			m.authEpochs[prevID]++
 			removedTombstones = append(removedTombstones, removalTombstone{
 				id:    prevID,

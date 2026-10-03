@@ -93,6 +93,9 @@ func (s *Service) Run(ctx context.Context) error {
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
 	}
 
+	s.applyUsageSweepConfig(s.cfg)
+	s.applyResetLoopConfig(s.cfg)
+
 	if !homeEnabled {
 		tokenResult, err := s.tokenProvider.Load(ctx, s.cfg)
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -287,6 +290,8 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			s.watcherCancel()
 		}
 		if s.coreManager != nil {
+			s.coreManager.StopUsageSweep()
+			s.coreManager.StopResetLoop()
 			s.coreManager.StopAutoRefresh()
 		}
 		if s.watcher != nil {

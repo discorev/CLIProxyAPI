@@ -16,8 +16,8 @@ func TestWeightedRoundRobinRoutingSelector(t *testing.T) {
 	if state.strategy != "weighted-round-robin" {
 		t.Fatalf("strategy = %q, want weighted-round-robin", state.strategy)
 	}
-	if _, ok := newRoutingSelector(state).(*coreauth.WeightedRoundRobinSelector); !ok {
-		t.Fatalf("selector type = %T, want *auth.WeightedRoundRobinSelector", newRoutingSelector(state))
+	if _, ok := newRoutingSelector(state, nil).(*coreauth.WeightedRoundRobinSelector); !ok {
+		t.Fatalf("selector type = %T, want *auth.WeightedRoundRobinSelector", newRoutingSelector(state, nil))
 	}
 }
 
