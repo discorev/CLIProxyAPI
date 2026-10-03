@@ -17,7 +17,7 @@ type UsageWindow struct {
 	Kind        string    `json:"kind"`
 	Scope       string    `json:"scope"`
 	UsedPercent float64   `json:"used_percent"`
-	ResetsAt    time.Time `json:"resets_at"`
+	ResetsAt    time.Time `json:"resets_at,omitzero"`
 	Length      int64     `json:"length"`
 }
 
@@ -25,13 +25,13 @@ type UsageWindow struct {
 type CredentialUsage struct {
 	Raw           map[string]json.RawMessage `json:"raw"`
 	Resets        *CredentialResets          `json:"resets"`
-	FetchedAt     time.Time                  `json:"fetched_at"`
+	FetchedAt     time.Time                  `json:"fetched_at,omitzero"`
 	Windows       []UsageWindow              `json:"windows"`
-	ObservedAt    time.Time                  `json:"observed_at"`
+	ObservedAt    time.Time                  `json:"observed_at,omitzero"`
 	Refreshing    bool                       `json:"refreshing"`
 	LastError     string                     `json:"last_error"`
-	NextFetchAt   time.Time                  `json:"next_fetch_at"`
-	CooldownUntil time.Time                  `json:"cooldown_until"`
+	NextFetchAt   time.Time                  `json:"next_fetch_at,omitzero"`
+	CooldownUntil time.Time                  `json:"cooldown_until,omitzero"`
 }
 
 // UsageFetchResult retains ancillary endpoint failures without discarding usage.

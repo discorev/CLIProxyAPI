@@ -67,10 +67,17 @@ func TestCredentialUsageAPI(t *testing.T) {
 		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &rows) != nil || len(rows) != 1 {
 			t.Fatalf("response: %d %s", rec.Code, rec.Body.String())
 		}
-		for _, field := range []string{"auth_index", "auth_id", "provider", "raw", "resets", "fetched_at", "windows", "observed_at", "refreshing", "last_error", "next_fetch_at", "cooldown_until"} {
+		for _, field := range []string{"auth_index", "auth_id", "provider", "raw", "resets", "windows", "refreshing", "last_error"} {
 			if _, ok := rows[0][field]; !ok {
 				t.Errorf("missing field %s in %s", field, rec.Body.String())
 			}
+		}
+		// Unset timestamps are omitted rather than sent as the zero time.
+		if strings.Contains(rec.Body.String(), "0001-01-01") {
+			t.Errorf("zero timestamp serialized: %s", rec.Body.String())
+		}
+		if _, ok := rows[0]["fetched_at"]; ok != refreshed {
+			t.Errorf("fetched_at presence = %v, want %v: %s", ok, refreshed, rec.Body.String())
 		}
 		if string(rows[0]["auth_id"]) != `"oauth"` || string(rows[0]["auth_index"]) != `"`+oauth.Index+`"` {
 			t.Errorf("wrong credential: %s", rec.Body.String())

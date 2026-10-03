@@ -18,7 +18,7 @@ type CredentialResets struct {
 
 type ResetCredit struct {
 	ID        string    `json:"id"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
 type ClaudeResetStatus struct {
@@ -29,7 +29,7 @@ type ClaudeResetStatus struct {
 	Grants           []ResetGrant `json:"grants"`
 	NextGrantID      *string      `json:"next_grant_id"`
 	WeeklyResetsAt   *time.Time   `json:"weekly_resets_at"`
-	CooldownUntil    *time.Time   `json:"cooldown_until"`
+	CooldownUntil    *time.Time   `json:"cooldown_until,omitzero"`
 }
 
 type ResetGrant struct {
