@@ -132,6 +132,7 @@ access:
 # grant would lapse before recovery, or in its last 15 minutes if no limit is required.
 # reset-credits:
 #   auto-apply: false
+#   dry-run: false # log which resets auto-apply would use, without sending them; takes precedence over auto-apply
 
 # Routing strategy for selecting credentials when multiple match.
 routing:

@@ -301,3 +301,47 @@ func TestLogFormatterFormatsShortRequestID(t *testing.T) {
 		t.Fatalf("formatted line %q does not contain expected placeholder [--------]", lineEmpty)
 	}
 }
+
+func TestLogFormatterPrintsResetDryRunFields(t *testing.T) {
+	entry := log.NewEntry(log.New())
+	entry.Time = time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	entry.Level = log.InfoLevel
+	entry.Message = "auto reset would be applied"
+	entry.Data = log.Fields{
+		"auth_id": "a", "provider": "codex", "rule": "exhausted", "credit_id": "credit",
+		"reset_expires_at": "2026-10-02T14:00:00Z", "natural_recovery": "2026-10-02T17:00:00Z",
+		"reason": "credit expires before exhausted windows recover",
+	}
+	formatted, err := (&LogFormatter{}).Format(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[2026-10-02 12:00:00] [--------] [info ] auto reset would be applied provider=codex auth_id=\"a\" reason=\"credit expires before exhausted windows recover\" rule=exhausted credit_id=\"credit\" reset_expires_at=2026-10-02T14:00:00Z natural_recovery=2026-10-02T17:00:00Z\n"
+	if string(formatted) != want {
+		t.Fatalf("formatted=%q want=%q", formatted, want)
+	}
+	entry.Data["grant_id"] = "grant\nsecondary"
+	formatted, err = (&LogFormatter{}).Format(entry)
+	if err != nil || !strings.Contains(string(formatted), `grant_id="grant\nsecondary"`) || strings.Count(string(formatted), "\n") != 1 {
+		t.Fatalf("grant ID not escaped: %q, %v", formatted, err)
+	}
+}
+
+func TestLogFormatterPrintsResetAttemptFields(t *testing.T) {
+	entry := log.NewEntry(log.New())
+	entry.Time = time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	entry.Level = log.InfoLevel
+	entry.Message = "subscription reset attempt"
+	entry.Data = log.Fields{
+		"auth_id": "a", "provider": "claude", "rule": "expiring_exhausted", "grant_id": "grant",
+		"reset_expires_at": entry.Time.Add(2 * time.Hour), "outcome": "reset",
+	}
+	formatted, err := (&LogFormatter{}).Format(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[2026-10-02 12:00:00] [--------] [info ] subscription reset attempt provider=claude auth_id=\"a\" rule=expiring_exhausted grant_id=\"grant\" reset_expires_at=2026-10-02 14:00:00 +0000 UTC outcome=reset\n"
+	if string(formatted) != want {
+		t.Fatalf("formatted=%q want=%q", formatted, want)
+	}
+}

@@ -9,12 +9,22 @@ import (
 
 func TestResetCreditsConfigDiff(t *testing.T) {
 	before := &config.Config{}
-	after := &config.Config{ResetCredits: config.ResetCreditsConfig{AutoApply: true}}
-	changes := BuildConfigChangeDetails(before, after)
-	if !slices.Contains(changes, "reset-credits.auto-apply: false -> true") {
-		t.Fatalf("missing diff: %v", changes)
-	}
-	if changes := BuildConfigChangeDetails(after, after); slices.Contains(changes, "reset-credits.auto-apply: true -> true") {
-		t.Fatalf("spurious diff: %v", changes)
+	after := &config.Config{ResetCredits: config.ResetCreditsConfig{AutoApply: true, DryRun: true}}
+	for _, field := range []string{"auto-apply", "dry-run"} {
+		for _, tt := range []struct {
+			old, current *config.Config
+			want         string
+		}{
+			{before, after, "false -> true"},
+			{after, before, "true -> false"},
+		} {
+			changes := BuildConfigChangeDetails(tt.old, tt.current)
+			if !slices.Contains(changes, "reset-credits."+field+": "+tt.want) {
+				t.Fatalf("missing diff: %v", changes)
+			}
+		}
+		if changes := BuildConfigChangeDetails(after, after); slices.Contains(changes, "reset-credits."+field+": true -> true") {
+			t.Fatalf("spurious diff: %v", changes)
+		}
 	}
 }

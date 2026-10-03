@@ -7,11 +7,12 @@ import (
 	"time"
 )
 
-// StartResetLoop enables automatic spending. Only service config with the
-// explicit, default-off auto-apply flag calls this; routing strategy is unrelated.
+// StartResetLoop enables automatic reset evaluation, spending only outside dry-run.
+// Service config opts in with auto-apply or dry-run; routing strategy is unrelated.
 func (m *Manager) StartResetLoop() {
 	m.usage.mu.Lock()
 	defer m.usage.mu.Unlock()
+	m.updateResetDryRunLocked()
 	if m.usage.resetCancel != nil {
 		return
 	}
@@ -48,6 +49,8 @@ func (m *Manager) StopResetLoop() {
 	if m.usage.resetCancel != nil {
 		m.usage.resetCancel()
 		m.usage.resetCancel = nil
+		m.usage.resetDryRun = false
+		m.usage.resetDecisions = nil
 	}
 }
 
@@ -111,12 +114,13 @@ func (m *Manager) sweepResets(ctx context.Context) {
 		}
 		candidates = append(candidates, resetCandidate{auth: auth, entry: entry, recovery: recovery})
 	}
+	var selected []resetCandidate
 	var claude *resetCandidate
 	for _, candidate := range candidates {
 		if strings.EqualFold(candidate.auth.Provider, "codex") {
 			if choice := codexResetChoice(candidate.entry.CredentialUsage, now); choice != nil {
 				candidate.choice = *choice
-				m.startAutomaticReset(ctx, candidate)
+				selected = append(selected, candidate)
 			}
 			continue
 		}
@@ -133,7 +137,14 @@ func (m *Manager) sweepResets(ctx context.Context) {
 		}
 	}
 	if claude != nil {
-		m.startAutomaticReset(ctx, *claude)
+		selected = append(selected, *claude)
+	}
+	if m.resetDryRun() {
+		m.logResetDecisions(ctx, selected, now)
+		return
+	}
+	for _, candidate := range selected {
+		m.startAutomaticReset(ctx, candidate)
 	}
 }
 

@@ -354,6 +354,7 @@ type QuotaExceeded struct {
 // It is off by default, independently of the routing strategy.
 type ResetCreditsConfig struct {
 	AutoApply bool `yaml:"auto-apply" json:"auto-apply"`
+	DryRun    bool `yaml:"dry-run" json:"dry-run"`
 }
 
 // RoutingConfig configures how credentials are selected for requests.

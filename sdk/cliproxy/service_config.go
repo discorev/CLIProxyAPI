@@ -248,7 +248,7 @@ func (s *Service) applyResetLoopConfig(cfg *config.Config) {
 	if s.coreManager == nil {
 		return
 	}
-	if cfg != nil && !cfg.Home.Enabled && cfg.ResetCredits.AutoApply {
+	if cfg != nil && !cfg.Home.Enabled && (cfg.ResetCredits.AutoApply || cfg.ResetCredits.DryRun) {
 		s.coreManager.StartResetLoop()
 	} else {
 		s.coreManager.StopResetLoop()

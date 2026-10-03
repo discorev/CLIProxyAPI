@@ -48,10 +48,7 @@ func (m *Manager) reserveReset(ctx context.Context, id string, expected *usageEn
 		return nil, nil, nil, ctx.Err()
 	}
 	if expected != nil {
-		if m.usage.resetCancel == nil || auth.Disabled || auth.Status == StatusDisabled ||
-			m.usage.entries[id] != expected || !resetInventoryFresh(expected.CredentialUsage, m.usage.timeNow()) ||
-			resetLocked(state, expected, m.usage.timeNow()) ||
-			(state != nil && m.usage.timeNow().Before(state.retryAt)) {
+		if m.resetDryRun() || !m.automaticResetAvailable(auth, expected, state, m.usage.timeNow()) {
 			return nil, nil, nil, ErrResetUnavailable
 		}
 	}
@@ -64,6 +61,14 @@ func (m *Manager) reserveReset(ctx context.Context, id string, expected *usageEn
 	}
 	state.inFlight = true
 	return auth.Clone(), applier, state, nil
+}
+
+// automaticResetAvailable is shared by real reservations and dry-run decisions.
+// The manager and usage locks must be held; this never changes spending state.
+func (m *Manager) automaticResetAvailable(auth *Auth, expected *usageEntry, state *resetAttempt, now time.Time) bool {
+	return m.usage.resetCancel != nil && !auth.Disabled && auth.Status != StatusDisabled &&
+		m.usage.entries[auth.ID] == expected && resetInventoryFresh(expected.CredentialUsage, now) &&
+		!resetLocked(state, expected, now) && (state == nil || (!state.inFlight && !now.Before(state.retryAt)))
 }
 
 func (m *Manager) releaseReset(state *resetAttempt) {
@@ -109,6 +114,11 @@ func (m *Manager) resetAuthCurrent(auth *Auth, automatic bool) bool {
 }
 
 func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApplier, state *resetAttempt, entry CredentialUsage, choice resetChoice) (ResetResult, CredentialUsage, error) {
+	// A config reload may enable dry-run after an automatic reset was queued.
+	// Release its reservation without sending or changing cooldown/backoff state.
+	if choice.rule != "manual" && m.resetDryRun() {
+		return ResetResult{Result: "unavailable", NotSent: true}, m.UsageSnapshot(auth.ID), ErrResetUnavailable
+	}
 	if ctx.Err() != nil || !m.resetAuthCurrent(auth, choice.rule != "manual") {
 		return m.resetRefused(auth, state, choice, ResetResult{Result: "unavailable", NotSent: true})
 	}

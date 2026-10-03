@@ -94,14 +94,16 @@ type realUsageTicker struct{ *time.Ticker }
 func (t realUsageTicker) Ticks() <-chan time.Time { return t.C }
 
 type usageCache struct {
-	resetCancel context.CancelFunc
-	resets      map[string]*resetAttempt
-	mu          sync.RWMutex
-	entries     map[string]*usageEntry
-	flights     map[string]*usageFlight
-	cancel      context.CancelFunc
-	now         func() time.Time
-	newTicker   func() usageTicker
+	resetCancel    context.CancelFunc
+	resetDryRun    bool
+	resetDecisions map[resetDecisionKey]time.Time
+	resets         map[string]*resetAttempt
+	mu             sync.RWMutex
+	entries        map[string]*usageEntry
+	flights        map[string]*usageFlight
+	cancel         context.CancelFunc
+	now            func() time.Time
+	newTicker      func() usageTicker
 }
 
 func (u *usageCache) timeNow() time.Time {

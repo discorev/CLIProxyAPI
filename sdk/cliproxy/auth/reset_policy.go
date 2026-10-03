@@ -6,9 +6,10 @@ import (
 )
 
 type resetChoice struct {
-	grantID string
-	expires time.Time
-	rule    string
+	grantID  string
+	creditID string
+	expires  time.Time
+	rule     string
 }
 
 // exhaustedResetWindows deliberately excludes model-scoped/Fable limits and
@@ -115,10 +116,10 @@ func codexResetChoice(entry CredentialUsage, now time.Time) *resetChoice {
 	}
 	_, recovery := exhaustedResetWindows(entry, now)
 	if !recovery.IsZero() && credit.ExpiresAt.Before(recovery) {
-		return &resetChoice{expires: credit.ExpiresAt, rule: "exhausted"}
+		return &resetChoice{creditID: credit.ID, expires: credit.ExpiresAt, rule: "exhausted"}
 	}
 	if !credit.ExpiresAt.After(now.Add(15 * time.Minute)) {
-		return &resetChoice{expires: credit.ExpiresAt, rule: "last_chance"}
+		return &resetChoice{creditID: credit.ID, expires: credit.ExpiresAt, rule: "last_chance"}
 	}
 	return nil
 }
@@ -157,7 +158,7 @@ func manualResetChoice(provider string, entry CredentialUsage, grantID string, n
 			return nil
 		}
 		if credit := soonestResetCredit(entry.Resets, now); credit != nil {
-			return &resetChoice{expires: credit.ExpiresAt, rule: "manual"}
+			return &resetChoice{creditID: credit.ID, expires: credit.ExpiresAt, rule: "manual"}
 		}
 		return nil
 	}

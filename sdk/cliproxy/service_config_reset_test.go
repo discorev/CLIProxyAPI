@@ -14,20 +14,28 @@ func TestResetLoopConfigHotReload(t *testing.T) {
 	defer manager.StopUsageSweep()
 	service := &Service{coreManager: manager}
 	for _, tt := range []struct {
-		strategy            string
-		enabled, home, want bool
+		strategy                    string
+		enabled, dryRun, home, want bool
 	}{
-		{"round-robin", false, false, false},
-		{"round-robin", true, false, true},
-		{"fill-first", true, false, true},
-		{"intelligent-fill", true, false, true},
-		{"weighted-round-robin", true, false, true},
-		{"intelligent-fill", false, false, false},
-		{"round-robin", true, true, false},
-		{"round-robin", true, false, true},
-		{"round-robin", false, false, false},
+		{"round-robin", false, false, false, false},
+		{"round-robin", true, false, false, true},
+		{"fill-first", true, false, false, true},
+		{"intelligent-fill", true, false, false, true},
+		{"weighted-round-robin", true, false, false, true},
+		{"intelligent-fill", false, false, false, false},
+		{"round-robin", true, false, true, false},
+		{"round-robin", true, false, false, true},
+		{"round-robin", false, false, false, false},
+		{"round-robin", false, true, false, true},
+		{"round-robin", true, true, false, true},
+		{"round-robin", true, false, false, true},
+		{"round-robin", false, true, false, true},
+		{"round-robin", false, true, true, false},
+		{"round-robin", true, true, true, false},
+		{"round-robin", false, true, false, true},
+		{"round-robin", false, false, false, false},
 	} {
-		cfg := &internalconfig.Config{Routing: internalconfig.RoutingConfig{Strategy: tt.strategy}, ResetCredits: internalconfig.ResetCreditsConfig{AutoApply: tt.enabled}}
+		cfg := &internalconfig.Config{Routing: internalconfig.RoutingConfig{Strategy: tt.strategy}, ResetCredits: internalconfig.ResetCreditsConfig{AutoApply: tt.enabled, DryRun: tt.dryRun}}
 		cfg.Home.Enabled = tt.home
 		if !service.applyManagerConfig(context.Background(), configCommit{cfg: cfg}) {
 			t.Fatalf("apply config failed: %+v", tt)
