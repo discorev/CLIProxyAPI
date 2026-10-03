@@ -2,11 +2,12 @@ package config
 
 import (
 	"errors"
-	"io/fs"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -159,7 +160,7 @@ func TestWriteConfigFileRestoreFailureKeepsStagedCopy(t *testing.T) {
 	}
 }
 
-func TestWriteConfigFileMissingFileWriteFailureRemovesPartial(t *testing.T) {
+func TestWriteConfigFileMissingFileWriteFailureEmptiesPartial(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	failWriteCalls(t, 1)
 
@@ -167,21 +168,36 @@ func TestWriteConfigFileMissingFileWriteFailureRemovesPartial(t *testing.T) {
 		t.Fatal("expected write error")
 	}
 
-	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("partial file left behind, stat err = %v", err)
+	if got := readTestConfig(t, path); got != "" {
+		t.Fatalf("partial content left behind: %q", got)
 	}
 }
 
-func TestWriteConfigFileReadOnlyDirSkipsStaging(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores directory permissions")
-	}
-	path := writeTestConfig(t, "port: 1\nlonger: content-that-gets-truncated\n")
-	dir := filepath.Dir(path)
+// readOnlyDir makes dir non-writable for the rest of the test.
+func readOnlyDir(t *testing.T, dir string) {
+	t.Helper()
 	if err := os.Chmod(dir, 0o555); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+}
+
+func TestWriteConfigFileReadOnlyDirStagesInTempDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	tempDir := t.TempDir()
+	t.Setenv("TMPDIR", tempDir)
+	path := writeTestConfig(t, "port: 1\nlonger: content-that-gets-truncated\n")
+	readOnlyDir(t, filepath.Dir(path))
+
+	orig := writeAndSync
+	var written []string
+	writeAndSync = func(f *os.File, data []byte) error {
+		written = append(written, f.Name())
+		return orig(f, data)
+	}
+	t.Cleanup(func() { writeAndSync = orig })
 
 	if err := WriteConfigFile(path, []byte("port: 2\n"), 0o600); err != nil {
 		t.Fatalf("WriteConfigFile: %v", err)
@@ -189,5 +205,84 @@ func TestWriteConfigFileReadOnlyDirSkipsStaging(t *testing.T) {
 
 	if got := readTestConfig(t, path); got != "port: 2\n" {
 		t.Fatalf("content = %q", got)
+	}
+	if len(written) != 2 || filepath.Dir(written[0]) != tempDir || written[1] != path {
+		t.Fatalf("writes = %v, want staged copy in %s then %s", written, tempDir, path)
+	}
+	if left := stagedConfigs(t, tempDir); len(left) != 0 {
+		t.Fatalf("staged files left behind: %v", left)
+	}
+}
+
+func TestWriteConfigFileNoStagingDirRefusesSave(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	tempDir := t.TempDir()
+	readOnlyDir(t, tempDir)
+	t.Setenv("TMPDIR", tempDir)
+	path := writeTestConfig(t, "port: 1\n")
+	readOnlyDir(t, filepath.Dir(path))
+
+	err := WriteConfigFile(path, []byte("port: 2\n"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "stage config") {
+		t.Fatalf("expected stage config error, got %v", err)
+	}
+
+	if got := readTestConfig(t, path); got != "port: 1\n" {
+		t.Fatalf("original changed: %q", got)
+	}
+}
+
+func TestWriteConfigFileMissingFileKeepsReplacementOnFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	orig := writeAndSync
+	writeAndSync = func(f *os.File, data []byte) error {
+		// Another writer replaces our new file with its own before we clean up.
+		if err := os.Remove(path); err != nil {
+			t.Errorf("remove: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("other: true\n"), 0o600); err != nil {
+			t.Errorf("install other: %v", err)
+		}
+		return errors.New("injected write failure")
+	}
+	t.Cleanup(func() { writeAndSync = orig })
+
+	if err := WriteConfigFile(path, []byte("port: 2\n"), 0o600); err == nil {
+		t.Fatal("expected write error")
+	}
+
+	if got := readTestConfig(t, path); got != "other: true\n" {
+		t.Fatalf("other writer's file = %q", got)
+	}
+}
+
+func TestWriteConfigFileConcurrentWriters(t *testing.T) {
+	path := writeTestConfig(t, "port: 0\n")
+	const writers = 16
+	payloads := make([]string, writers)
+	errs := make([]error, writers)
+	var wg sync.WaitGroup
+	for i := range writers {
+		payloads[i] = fmt.Sprintf("port: %d\n", i+1)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = WriteConfigFile(path, []byte(payloads[i]), 0o600)
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("writer %d: %v", i, err)
+		}
+	}
+	if got := readTestConfig(t, path); !slices.Contains(payloads, got) {
+		t.Fatalf("final content %q is not one of the payloads", got)
+	}
+	if left := stagedConfigs(t, filepath.Dir(path)); len(left) != 0 {
+		t.Fatalf("staged files left behind: %v", left)
 	}
 }
