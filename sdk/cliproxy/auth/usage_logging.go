@@ -81,6 +81,11 @@ func (m *Manager) removeUsageLocked(auth *Auth, reason, changes string) {
 			delete(m.usage.resetDecisions, key)
 		}
 	}
+	for key := range m.usage.lastChanceRefused {
+		if key.authID == id {
+			delete(m.usage.lastChanceRefused, key)
+		}
+	}
 	if cleared {
 		fields := log.Fields{"auth_id": id, "provider": auth.Provider, "reason": reason}
 		if changes != "" {

@@ -102,9 +102,12 @@ type usageCache struct {
 	resetDryRun    bool
 	resetDecisions map[resetDecisionKey]time.Time
 	resets         map[string]*resetAttempt
-	mu             sync.RWMutex
-	entries        map[string]*usageEntry
-	flights        map[string]*usageFlight
+	// lastChanceRefused maps Codex credits whose automatic last_chance attempt
+	// returned not_limited to their expiry; they are pruned once expired.
+	lastChanceRefused map[resetCreditKey]time.Time
+	mu                sync.RWMutex
+	entries           map[string]*usageEntry
+	flights           map[string]*usageFlight
 	// abandoned holds the last superseded flight per credential. Only one may
 	// stay outstanding, bounding stalled connections without a deadline.
 	abandoned map[string]*usageFlight

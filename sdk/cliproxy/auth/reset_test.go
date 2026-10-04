@@ -8,6 +8,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 type fakeResetExecutor struct {
@@ -602,4 +604,93 @@ func TestResetCodexTargetsChosenCredit(t *testing.T) {
 			t.Fatalf("credit not targeted: %+v", sent)
 		}
 	})
+}
+
+func TestResetLoopCodexLastChanceTriedOncePerCredit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		hook := setupTestLoggerHook(t)
+		log.SetLevel(log.InfoLevel)
+		manager, executor, clock := setupResetManager(t, "codex")
+		inventory := resetTestEntry("codex", 9, 5*time.Hour, 15*time.Minute)
+		seedResetAuth(t, manager, "a", "codex", inventory)
+		var rules []string
+		executor.apply = func(_ context.Context, _ *Auth, req ResetRequest) (ResetResult, error) {
+			if req.CreditID != "credit" {
+				t.Errorf("credit=%q", req.CreditID)
+			}
+			if executor.calls.Load() == 1 {
+				return ResetResult{Result: "not_limited"}, nil
+			}
+			return ResetResult{Result: "reset"}, nil
+		}
+		executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+			clock.advance(time.Nanosecond)
+			return UsageFetchResult{Resets: inventory.Resets, Windows: inventory.Windows}, nil
+		}
+		manager.StartResetLoop()
+		synctest.Wait()
+		if executor.calls.Load() != 1 {
+			t.Fatalf("calls=%d", executor.calls.Load())
+		}
+		for range 3 {
+			clock.advance(time.Minute)
+			manager.sweepResets(context.Background())
+			synctest.Wait()
+		}
+		if executor.calls.Load() != 1 {
+			t.Fatalf("last_chance repeated after not_limited: calls=%d", executor.calls.Load())
+		}
+		for _, entry := range hook.AllEntries() {
+			if entry.Message == "auto reset not needed: credit skipped for last_chance until it expires" {
+				rules = append(rules, entry.Data["rule"].(string))
+				if entry.Data["credit_id"] != "credit" || entry.Data["outcome"] != "not_limited" || entry.Level != log.InfoLevel {
+					t.Fatalf("log=%+v", entry.Data)
+				}
+			}
+		}
+		if len(rules) != 1 {
+			t.Fatalf("refusal logs=%v", rules)
+		}
+		// The exhausted rule may still spend the remembered credit.
+		manager.usage.mu.Lock()
+		exhausted := cloneCredentialUsage(inventory)
+		exhausted.Windows[0].UsedPercent = 100
+		exhausted.FetchedAt = clock.now()
+		manager.usage.entries["a"] = &usageEntry{CredentialUsage: exhausted, fetchStartedAt: clock.now(), windowVersions: make(map[string]uint64)}
+		manager.usage.mu.Unlock()
+		manager.sweepResets(context.Background())
+		synctest.Wait()
+		if executor.calls.Load() != 2 {
+			t.Fatalf("exhausted rule blocked by last_chance refusal: calls=%d", executor.calls.Load())
+		}
+		clock.advance(15 * time.Minute)
+		manager.sweepResets(context.Background())
+		synctest.Wait()
+		manager.usage.mu.RLock()
+		remembered := len(manager.usage.lastChanceRefused)
+		manager.usage.mu.RUnlock()
+		if remembered != 0 {
+			t.Fatal("expired refusal not pruned")
+		}
+		manager.StopResetLoop()
+		synctest.Wait()
+	})
+}
+
+func TestResetManualCodexNotLimitedNotRemembered(t *testing.T) {
+	manager, executor, _ := setupResetManager(t, "codex")
+	inventory := resetTestEntry("codex", 9, 5*time.Hour, 15*time.Minute)
+	seedResetAuth(t, manager, "a", "codex", inventory)
+	executor.apply = func(context.Context, *Auth, ResetRequest) (ResetResult, error) {
+		return ResetResult{Result: "not_limited"}, nil
+	}
+	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+		return UsageFetchResult{Resets: inventory.Resets, Windows: inventory.Windows}, nil
+	}
+	if result, _, err := manager.ApplyCredentialReset(context.Background(), "a", ""); err != nil || result.Result != "not_limited" {
+		t.Fatalf("manual reset: %+v %v", result, err)
+	}
+	if len(manager.usage.lastChanceRefused) != 0 {
+		t.Fatal("manual not_limited was remembered")
+	}
 }

@@ -20,6 +20,26 @@ type resetAttempt struct {
 
 const resetRefusalBackoff = 15 * time.Minute
 
+type resetCreditKey struct{ authID, creditID string }
+
+// rememberLastChanceRefusalLocked stops repeating a Codex last_chance attempt
+// that upstream answered with nothing to reset; nothing was spent. The
+// exhausted rule may still spend the credit later. usage.mu must be held.
+func (m *Manager) rememberLastChanceRefusalLocked(auth *Auth, choice resetChoice, outcome string) {
+	if choice.rule != "last_chance" || outcome != "not_limited" || choice.creditID == "" ||
+		!strings.EqualFold(auth.Provider, "codex") {
+		return
+	}
+	if m.usage.lastChanceRefused == nil {
+		m.usage.lastChanceRefused = make(map[resetCreditKey]time.Time)
+	}
+	m.usage.lastChanceRefused[resetCreditKey{auth.ID, choice.creditID}] = choice.expires
+	log.WithFields(log.Fields{
+		"auth_id": auth.ID, "provider": auth.Provider, "rule": choice.rule, "credit_id": choice.creditID,
+		"reset_expires_at": choice.expires.UTC().Format(time.RFC3339), "outcome": outcome,
+	}).Info("auto reset not needed: credit skipped for last_chance until it expires")
+}
+
 func resetLocked(state *resetAttempt, entry *usageEntry, now time.Time) bool {
 	if state == nil || state.attempted.IsZero() {
 		return false
@@ -170,6 +190,7 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 		m.usage.mu.Unlock()
 		return result, m.UsageSnapshot(auth.ID), nil
 	}
+	m.rememberLastChanceRefusalLocked(auth, choice, result.Result)
 	state.authError = result.Result == "auth_error"
 	if state.authError {
 		// HTTP 401/403 is definitely not spent. Keep only a bounded retry delay,

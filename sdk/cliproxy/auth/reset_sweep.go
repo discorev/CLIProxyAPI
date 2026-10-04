@@ -72,6 +72,13 @@ func (m *Manager) sweepResets(ctx context.Context) {
 		return
 	}
 	now := m.usage.timeNow()
+	m.usage.mu.Lock()
+	for key, expires := range m.usage.lastChanceRefused {
+		if !expires.After(now) {
+			delete(m.usage.lastChanceRefused, key)
+		}
+	}
+	m.usage.mu.Unlock()
 	auths := m.List()
 	sort.Slice(auths, func(i, j int) bool { return auths[i].ID < auths[j].ID })
 	var candidates []resetCandidate
@@ -118,7 +125,7 @@ func (m *Manager) sweepResets(ctx context.Context) {
 	var claude *resetCandidate
 	for _, candidate := range candidates {
 		if strings.EqualFold(candidate.auth.Provider, "codex") {
-			if choice := codexResetChoice(candidate.entry.CredentialUsage, now); choice != nil {
+			if choice := codexResetChoice(candidate.entry.CredentialUsage, now); choice != nil && !m.lastChanceRefused(candidate.auth.ID, *choice) {
 				candidate.choice = *choice
 				selected = append(selected, candidate)
 			}
@@ -146,6 +153,16 @@ func (m *Manager) sweepResets(ctx context.Context) {
 	for _, candidate := range selected {
 		m.startAutomaticReset(ctx, candidate)
 	}
+}
+
+func (m *Manager) lastChanceRefused(authID string, choice resetChoice) bool {
+	if choice.rule != "last_chance" {
+		return false
+	}
+	m.usage.mu.RLock()
+	defer m.usage.mu.RUnlock()
+	_, refused := m.usage.lastChanceRefused[resetCreditKey{authID, choice.creditID}]
+	return refused
 }
 
 func resetCandidateBefore(candidate, other resetCandidate) bool {
