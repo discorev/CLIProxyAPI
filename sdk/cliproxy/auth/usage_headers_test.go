@@ -63,6 +63,27 @@ func TestUsageWindowsFromCodexHeaders(t *testing.T) {
 	}
 }
 
+func TestUsageWindowsFromCodexHeadersIgnoresEmptySlot(t *testing.T) {
+	now := time.Unix(1791070406, 0)
+	headers := http.Header{
+		"X-Codex-Primary-Used-Percent":          {"9"},
+		"X-Codex-Primary-Window-Minutes":        {"10080"},
+		"X-Codex-Primary-Reset-At":              {"1791590904"},
+		"X-Codex-Primary-Reset-After-Seconds":   {"520498"},
+		"X-Codex-Secondary-Used-Percent":        {"0"},
+		"X-Codex-Secondary-Window-Minutes":      {"0"},
+		"X-Codex-Secondary-Reset-At":            {""},
+		"X-Codex-Secondary-Reset-After-Seconds": {"0"},
+	}
+	previous := []UsageWindow{{Kind: "7d", Length: 604800, UsedPercent: 8, ResetsAt: time.Unix(1791590904, 0)}}
+	for _, prev := range [][]UsageWindow{nil, previous} {
+		windows := usageWindowsFromHeaders("codex", headers, prev, now)
+		if len(windows) != 1 || windows[0].Kind != "7d" || windows[0].UsedPercent != 9 || !windows[0].ResetsAt.Equal(time.Unix(1791590904, 0)) {
+			t.Fatalf("windows = %+v", windows)
+		}
+	}
+}
+
 func TestMarkResultMergesUsageWindowsWithoutChangingRaw(t *testing.T) {
 	manager := NewManager(nil, nil, nil)
 	auth := registerUsageAuth(t, manager, "claude", "claude")

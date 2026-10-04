@@ -105,10 +105,12 @@ func usageWindowsFromHeaders(provider string, headers http.Header, previous []Us
 			used, hasUsed := usageHeaderNumber(headers, prefix+"used-percent")
 			reset, hasReset := usageHeaderNumber(headers, prefix+"reset-at")
 			after, hasAfter := usageHeaderNumber(headers, prefix+"reset-after-seconds")
-			if !hasUsed && !hasReset && !hasAfter {
+			minutes, hasMinutes := usageHeaderNumber(headers, prefix+"window-minutes")
+			// Codex sends an all-zero slot when the plan has no such window. An
+			// explicit zero-length window is absent, not a freshly reset one.
+			if (!hasUsed && !hasReset && !hasAfter) || (hasMinutes && minutes == 0) {
 				continue
 			}
-			minutes, _ := usageHeaderNumber(headers, prefix+"window-minutes")
 			length := int64(minutes * 60)
 			kind := UsageWindowKind(length, []string{"5h", "7d"}[i])
 			if length <= 0 {
