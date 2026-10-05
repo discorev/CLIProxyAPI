@@ -137,7 +137,7 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 		return m.resetRefused(auth, state, choice, ResetResult{Result: "unavailable", NotSent: true})
 	}
 	auth = current
-	request := ResetRequest{GrantID: choice.grantID}
+	request := ResetRequest{GrantID: choice.grantID, CreditID: choice.creditID}
 	if choice.rule != "manual" {
 		request.IdempotencyKey = resetIdempotencyKey(auth, entry, choice)
 	}

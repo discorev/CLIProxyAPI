@@ -49,7 +49,9 @@ type ResetGrant struct {
 // ResetRequest contains only claim parameters, not credentials. OrganizationID
 // comes from the cached profile, falling back to credential metadata upstream.
 type ResetRequest struct {
-	GrantID        string
+	GrantID string
+	// CreditID targets a specific Codex reset credit; empty lets upstream choose.
+	CreditID       string
 	OrganizationID string
 	// IdempotencyKey is sent as the upstream request ID. Automatic resets derive
 	// it from the account and the reset being spent, so separate proxy

@@ -580,3 +580,26 @@ func TestResetLoopClaudeUrgencyBeforeRecovery(t *testing.T) {
 		})
 	}
 }
+
+func TestResetCodexTargetsChosenCredit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		manager, executor, clock := setupResetManager(t, "codex")
+		inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+		seedResetAuth(t, manager, "a", "codex", inventory)
+		executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+			clock.advance(time.Nanosecond)
+			return UsageFetchResult{Resets: inventory.Resets, Windows: inventory.Windows}, nil
+		}
+		var sent ResetRequest
+		executor.apply = func(_ context.Context, _ *Auth, req ResetRequest) (ResetResult, error) {
+			sent = req
+			return ResetResult{Result: "reset"}, nil
+		}
+		if _, _, err := manager.ApplyCredentialReset(context.Background(), "a", ""); err != nil {
+			t.Fatal(err)
+		}
+		if sent.CreditID != "credit" {
+			t.Fatalf("credit not targeted: %+v", sent)
+		}
+	})
+}

@@ -34,7 +34,7 @@ func TestSubscriptionResetExecutorHTTP(t *testing.T) {
 						t.Errorf("wrong codex request: %s %v", r.URL, r.Header)
 					}
 					id, err := uuid.Parse(body["redeem_request_id"])
-					if err != nil || id.Version() != 4 || len(body) != 1 {
+					if err != nil || id.Version() != 4 || body["credit_id"] != "credit-1" || len(body) != 2 {
 						t.Errorf("wrong body: %+v", body)
 					}
 				} else {
@@ -46,7 +46,7 @@ func TestSubscriptionResetExecutorHTTP(t *testing.T) {
 					}
 				}
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"result":"reset"}`))
+				_, _ = w.Write([]byte(`{"result":"reset","code":"reset","windows_reset":1}`))
 			}))
 			defer server.Close()
 			auth := &cliproxyauth.Auth{Provider: provider, Metadata: map[string]interface{}{"access_token": "fake-token", "account_id": "fake-account", "organization_uuid": org}}
@@ -60,7 +60,7 @@ func TestSubscriptionResetExecutorHTTP(t *testing.T) {
 				e.resetBaseURL = server.URL
 				applier = e
 			}
-			result, err := applier.ApplyReset(context.Background(), auth, cliproxyauth.ResetRequest{GrantID: "grant-1"})
+			result, err := applier.ApplyReset(context.Background(), auth, cliproxyauth.ResetRequest{GrantID: "grant-1", CreditID: "credit-1"})
 			if err != nil || result.Result != "reset" || result.NotSent || calls.Load() != 1 {
 				t.Fatalf("apply=%+v,%v calls=%d", result, err, calls.Load())
 			}
@@ -124,6 +124,42 @@ func TestSubscriptionResetClaudeOutcomesAndRefusals(t *testing.T) {
 	}
 }
 
+func TestSubscriptionResetCodexOutcomes(t *testing.T) {
+	for _, tt := range []struct {
+		name, body, want string
+		wantErr          bool
+	}{
+		{"reset", `{"code":"reset","windows_reset":2}`, "reset", false},
+		{"already redeemed", `{"code":"already_redeemed"}`, "already_used", false},
+		{"nothing to reset", `{"code":"nothing_to_reset","windows_reset":0}`, "not_limited", false},
+		{"no credit", `{"code":"no_credit"}`, "unavailable", false},
+		{"missing code", `{"windows_reset":1}`, "unknown", true},
+		{"unexpected code", `{"code":"future"}`, "unknown", true},
+		{"malformed", `bad`, "unknown", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+			e := NewCodexExecutor(nil)
+			e.resetBaseURL = server.URL
+			auth := &cliproxyauth.Auth{Provider: "codex", Metadata: map[string]interface{}{"access_token": "fake-token"}}
+			result, err := e.ApplyReset(context.Background(), auth, cliproxyauth.ResetRequest{})
+			if result.Result != tt.want || result.NotSent || (err != nil) != tt.wantErr {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if _, ok := body["credit_id"]; ok || len(body) != 1 {
+				t.Fatalf("credit_id sent without a chosen credit: %+v", body)
+			}
+		})
+	}
+}
+
 func TestSubscriptionResetDoesNotFollowRedirect(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -174,7 +210,7 @@ func TestSubscriptionResetSendsIdempotencyKey(t *testing.T) {
 				}
 				sent = append(sent, body["redeem_request_id"]+body["request_id"])
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"result":"reset"}`))
+				_, _ = w.Write([]byte(`{"result":"reset","code":"reset","windows_reset":1}`))
 			}))
 			defer server.Close()
 			auth := &cliproxyauth.Auth{Provider: provider, Metadata: map[string]interface{}{"access_token": "fake-token", "account_id": "fake-account", "organization_uuid": "12345678-1234-1234-1234-123456789abc"}}
