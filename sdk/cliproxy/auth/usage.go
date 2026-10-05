@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -68,16 +69,19 @@ func UsageFetchable(auth *Auth) bool {
 
 type usageEntry struct {
 	CredentialUsage
-	windowVersions     map[string]uint64
-	headerVersion      uint64
-	retryAt            time.Time
-	fetchStartedAt     time.Time
-	resetRetryExpiry   time.Time
-	lastFetchStartedAt time.Time
-	rawFetchedAt       map[string]time.Time
-	rateLimitLevel     int
-	waitForToken       bool
-	failedTokenHash    [32]byte
+	windowVersions map[string]uint64
+	headerVersion  uint64
+	// completeHeaderVersion is the headerVersion of the latest complete Codex
+	// header observation.
+	completeHeaderVersion uint64
+	retryAt               time.Time
+	fetchStartedAt        time.Time
+	resetRetryExpiry      time.Time
+	lastFetchStartedAt    time.Time
+	rawFetchedAt          map[string]time.Time
+	rateLimitLevel        int
+	waitForToken          bool
+	failedTokenHash       [32]byte
 }
 
 type usageFlight struct {
@@ -99,12 +103,15 @@ func (t realUsageTicker) Ticks() <-chan time.Time { return t.C }
 
 type usageCache struct {
 	resetCancel    context.CancelFunc
-	resetDryRun    bool
+	resetMode      resetMode // last announced reset mode
 	resetDecisions map[resetDecisionKey]time.Time
 	resets         map[string]*resetAttempt
-	mu             sync.RWMutex
-	entries        map[string]*usageEntry
-	flights        map[string]*usageFlight
+	// lastChanceRefused maps Codex credits whose automatic last_chance attempt
+	// returned not_limited to their expiry; they are pruned once expired.
+	lastChanceRefused map[resetCreditKey]time.Time
+	mu                sync.RWMutex
+	entries           map[string]*usageEntry
+	flights           map[string]*usageFlight
 	// abandoned holds the last superseded flight per credential. Only one may
 	// stay outstanding, bounding stalled connections without a deadline.
 	abandoned map[string]*usageFlight
@@ -313,6 +320,13 @@ func (m *Manager) fetchUsage(ctx context.Context, auth *Auth, fetcher UsageFetch
 		next.Resets = cloneCredentialResets(result.Resets)
 		next.LastError = result.LastError
 		windows := append([]UsageWindow{}, result.Windows...)
+		if next.completeHeaderVersion > headerVersion {
+			// Complete headers observed during this fetch list every credential-wide
+			// window; a fetched unscoped window they omit was removed, not stale.
+			windows = slices.DeleteFunc(windows, func(w UsageWindow) bool {
+				return w.Scope == "" && !slices.ContainsFunc(next.Windows, func(c UsageWindow) bool { return windowKey(c) == windowKey(w) })
+			})
+		}
 		versions := make(map[string]uint64, len(windows))
 		// A response observed while these HTTP calls were in flight is newer
 		// than the fetched view, including windows absent from that view.

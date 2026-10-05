@@ -27,4 +27,11 @@ func TestResetCreditsConfigDiff(t *testing.T) {
 			t.Fatalf("spurious diff: %v", changes)
 		}
 	}
+	limited := &config.Config{ResetCredits: config.ResetCreditsConfig{Providers: []string{"codex", "claude"}}}
+	if changes := BuildConfigChangeDetails(before, limited); !slices.Contains(changes, "reset-credits.providers: [] -> [codex, claude]") {
+		t.Fatalf("missing providers diff: %v", changes)
+	}
+	if changes := BuildConfigChangeDetails(limited, limited); len(changes) != 0 {
+		t.Fatalf("spurious providers diff: %v", changes)
+	}
 }

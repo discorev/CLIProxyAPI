@@ -3,6 +3,7 @@ package auth
 import (
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -45,11 +46,24 @@ func (m *Manager) observeUsageHeadersLocked(auth *Auth, headers http.Header, now
 	m.usage.mu.Lock()
 	defer m.usage.mu.Unlock()
 	next := cloneUsageEntry(m.usage.entries[auth.ID])
-	windows := usageWindowsFromHeaders(auth.Provider, normalized, next.Windows, now)
-	if len(windows) == 0 {
+	windows, complete := usageWindowsFromHeaders(auth.Provider, normalized, next.Windows, now)
+	if len(windows) == 0 && !complete {
 		return
 	}
 	next.headerVersion++
+	if complete {
+		next.completeHeaderVersion = next.headerVersion
+		// The headers listed every credential-wide window, so a cached one
+		// they omit (e.g. a now-empty slot) is stale. Scoped windows come only
+		// from usage fetches and are kept.
+		next.Windows = slices.DeleteFunc(next.Windows, func(cached UsageWindow) bool {
+			stale := cached.Scope == "" && !slices.ContainsFunc(windows, func(w UsageWindow) bool { return windowKey(w) == windowKey(cached) })
+			if stale {
+				delete(next.windowVersions, windowKey(cached))
+			}
+			return stale
+		})
+	}
 	for _, window := range windows {
 		next.Windows = mergeUsageWindow(next.Windows, window)
 		next.windowVersions[windowKey(window)] = next.headerVersion
@@ -62,8 +76,12 @@ func (m *Manager) observeUsageHeadersLocked(auth *Auth, headers http.Header, now
 	m.usage.entries[auth.ID] = next
 }
 
-func usageWindowsFromHeaders(provider string, headers http.Header, previous []UsageWindow, now time.Time) []UsageWindow {
+// usageWindowsFromHeaders also reports whether the windows are the complete
+// credential-wide set. That holds only for Codex headers whose slots all carry
+// window-minutes; older shapes without it are merged as partial updates.
+func usageWindowsFromHeaders(provider string, headers http.Header, previous []UsageWindow, now time.Time) ([]UsageWindow, bool) {
 	var windows []UsageWindow
+	complete := false
 	base := func(kind, scope string, length int64) UsageWindow {
 		for _, window := range previous {
 			if window.Kind == kind && window.Scope == scope {
@@ -100,15 +118,25 @@ func usageWindowsFromHeaders(provider string, headers http.Header, previous []Us
 			windows = append(windows, window)
 		}
 	case "codex":
+		described := 0
 		for i, slot := range []string{"primary", "secondary"} {
 			prefix := "x-codex-" + slot + "-"
 			used, hasUsed := usageHeaderNumber(headers, prefix+"used-percent")
 			reset, hasReset := usageHeaderNumber(headers, prefix+"reset-at")
 			after, hasAfter := usageHeaderNumber(headers, prefix+"reset-after-seconds")
+			minutes, hasMinutes := usageHeaderNumber(headers, prefix+"window-minutes")
+			// Codex sends an all-zero slot when the plan has no such window. An
+			// explicit zero-length window is absent, not a freshly reset one.
+			if hasMinutes && minutes == 0 {
+				described++
+				continue
+			}
 			if !hasUsed && !hasReset && !hasAfter {
 				continue
 			}
-			minutes, _ := usageHeaderNumber(headers, prefix+"window-minutes")
+			if hasMinutes {
+				described++
+			}
 			length := int64(minutes * 60)
 			kind := UsageWindowKind(length, []string{"5h", "7d"}[i])
 			if length <= 0 {
@@ -126,6 +154,7 @@ func usageWindowsFromHeaders(provider string, headers http.Header, previous []Us
 			}
 			windows = append(windows, window)
 		}
+		complete = described == 2
 	}
-	return windows
+	return windows, complete
 }

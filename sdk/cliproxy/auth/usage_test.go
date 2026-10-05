@@ -580,3 +580,89 @@ func TestUsagePartialFailureRetainsRawAndRetriesDespiteHeaders(t *testing.T) {
 		}
 	})
 }
+
+func codexWeeklyOnlyHeaders() http.Header {
+	return http.Header{
+		"X-Codex-Primary-Used-Percent":          {"9"},
+		"X-Codex-Primary-Window-Minutes":        {"10080"},
+		"X-Codex-Primary-Reset-At":              {"1791590904"},
+		"X-Codex-Primary-Reset-After-Seconds":   {"520498"},
+		"X-Codex-Secondary-Used-Percent":        {"0"},
+		"X-Codex-Secondary-Window-Minutes":      {"0"},
+		"X-Codex-Secondary-Reset-At":            {""},
+		"X-Codex-Secondary-Reset-After-Seconds": {"0"},
+	}
+}
+
+func usageWindowByKey(windows []UsageWindow, key string) (UsageWindow, bool) {
+	for _, w := range windows {
+		if windowKey(w) == key {
+			return w, true
+		}
+	}
+	return UsageWindow{}, false
+}
+
+func TestUsageFetchKeepsWindowsRemovedByCompleteHeaders(t *testing.T) {
+	weekly := time.Unix(1791590904, 0)
+	fetched := []UsageWindow{
+		{Kind: "5h", Length: 18000, UsedPercent: 50, ResetsAt: weekly.Add(-time.Hour)},
+		{Kind: "7d", Length: 604800, UsedPercent: 30, ResetsAt: weekly.Add(time.Hour)},
+		{Kind: "7d", Scope: "fable", Length: 604800, UsedPercent: 70, ResetsAt: weekly},
+	}
+	for _, tt := range []struct {
+		name         string
+		headers      http.Header
+		want5hGone   bool
+		wantWeeklyPc float64
+	}{
+		{"complete headers during flight", codexWeeklyOnlyHeaders(), true, 9},
+		{"no headers during flight", nil, false, 30},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				manager := NewManager(nil, nil, nil)
+				auth := registerUsageAuth(t, manager, "codex", "codex")
+				manager.usage.mu.Lock()
+				manager.usage.entries = map[string]*usageEntry{"codex": {
+					CredentialUsage: CredentialUsage{Windows: []UsageWindow{
+						{Kind: "5h", Length: 18000, UsedPercent: 100, ResetsAt: weekly.Add(-2 * time.Hour)},
+						{Kind: "7d", Length: 604800, UsedPercent: 8, ResetsAt: weekly},
+					}},
+					windowVersions: map[string]uint64{"5h:": 0, "7d:": 0},
+				}}
+				manager.usage.flights = make(map[string]*usageFlight)
+				manager.usage.mu.Unlock()
+				release := make(chan struct{})
+				manager.RegisterExecutor(&fakeUsageExecutor{provider: "codex", fetch: func(context.Context, *Auth) (UsageFetchResult, error) {
+					<-release
+					return UsageFetchResult{Windows: append([]UsageWindow{}, fetched...)}, nil
+				}})
+				go func() { _, _ = manager.RefreshUsage(context.Background(), auth.ID) }()
+				synctest.Wait()
+				if tt.headers != nil {
+					manager.mu.Lock()
+					manager.observeUsageHeadersLocked(auth, tt.headers, time.Unix(1791070406, 0))
+					manager.mu.Unlock()
+				}
+				close(release)
+				synctest.Wait()
+				got := manager.UsageSnapshot(auth.ID)
+				_, has5h := usageWindowByKey(got.Windows, "5h:")
+				if has5h == tt.want5hGone {
+					t.Fatalf("5h present = %v, windows = %+v", has5h, got.Windows)
+				}
+				weeklyWindow, ok := usageWindowByKey(got.Windows, "7d:")
+				if !ok || weeklyWindow.UsedPercent != tt.wantWeeklyPc {
+					t.Fatalf("7d window = %+v (found %v), want %v%%", weeklyWindow, ok, tt.wantWeeklyPc)
+				}
+				if tt.headers != nil && !weeklyWindow.ResetsAt.Equal(weekly) {
+					t.Fatalf("7d reset = %v, want header value %v", weeklyWindow.ResetsAt, weekly)
+				}
+				if scoped, ok := usageWindowByKey(got.Windows, "7d:fable"); !ok || scoped.UsedPercent != 70 {
+					t.Fatalf("scoped window lost: %+v", got.Windows)
+				}
+			})
+		})
+	}
+}

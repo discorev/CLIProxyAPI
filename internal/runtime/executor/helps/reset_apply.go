@@ -42,7 +42,11 @@ func ApplyCodexReset(ctx context.Context, auth *cliproxyauth.Auth, claim cliprox
 	if errID != nil {
 		return resetRefusal(errID)
 	}
-	body, _ := json.Marshal(map[string]string{"redeem_request_id": requestID})
+	claimBody := map[string]string{"redeem_request_id": requestID}
+	if creditID := strings.TrimSpace(claim.CreditID); creditID != "" {
+		claimBody["credit_id"] = creditID
+	}
+	body, _ := json.Marshal(claimBody)
 	accountID, _ := auth.Metadata["account_id"].(string)
 	return sendReset(ctx, auth, strings.TrimRight(baseURL, "/")+"/backend-api/wham/rate-limit-reset-credits/consume", body, codexUsageHeaders(strings.TrimSpace(accountID)), request, false)
 }
@@ -112,21 +116,49 @@ func sendReset(ctx context.Context, auth *cliproxyauth.Auth, endpoint string, bo
 			log.Debug("failed to close reset response body")
 		}
 	}()
-	if response.StatusCode == http.StatusTooManyRequests {
+	// Only a 2xx outcome depends on the body. Other statuses are decided by the
+	// status alone, so a slow error body cannot delay the outcome or hold the
+	// reservation (no timeout may be set once connected).
+	var responseBody []byte
+	var errRead error
+	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		responseBody, errRead = io.ReadAll(io.LimitReader(response.Body, 64*1024))
+	}
+	return resetResponseResult(response.StatusCode, responseBody, errRead, claude)
+}
+
+// codexResetOutcomes maps the Codex consume code (openai/codex
+// rate_limit_resets.rs) to a reset outcome.
+var codexResetOutcomes = map[string]string{
+	"reset": "reset", "already_redeemed": "already_used", "nothing_to_reset": "not_limited", "no_credit": "unavailable",
+}
+
+// resetResponseResult maps a consume response to an outcome. Unrecognised
+// bodies are "unknown", which keeps the spend lock until a later refresh.
+func resetResponseResult(status int, body []byte, errRead error, claude bool) (cliproxyauth.ResetResult, error) {
+	unknown := cliproxyauth.ResetResult{Result: "unknown"}
+	if status == http.StatusTooManyRequests {
 		return cliproxyauth.ResetResult{Result: "rate_limited"}, nil
 	}
-	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return cliproxyauth.ResetResult{Result: "auth_error"}, nil
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
+	if status < 200 || status >= 300 {
 		return unknown, errors.New("reset response unsuccessful; outcome unknown")
 	}
-	if !claude {
-		return cliproxyauth.ResetResult{Result: "reset"}, nil
-	}
-	body, errRead := io.ReadAll(io.LimitReader(response.Body, 64*1024))
 	if errRead != nil {
 		return unknown, errors.New("reset response unreadable; outcome unknown")
+	}
+	if !claude {
+		var payload struct {
+			Code string `json:"code"`
+		}
+		if json.Unmarshal(body, &payload) == nil {
+			if outcome, ok := codexResetOutcomes[payload.Code]; ok {
+				return cliproxyauth.ResetResult{Result: outcome}, nil
+			}
+		}
+		return unknown, errors.New("unrecognized reset response; outcome unknown")
 	}
 	var payload struct {
 		Result string `json:"result"`

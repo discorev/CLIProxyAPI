@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-models_repository="${MODELS_REPOSITORY_URL:-https://github.com/router-for-me/models.git}"
+models_repository="${MODELS_REPOSITORY_URL:-https://github.com/discorev/ai-models.git}"
 models_ref="${MODELS_REPOSITORY_REF:-main}"
 catalog_dir="${MODEL_CATALOG_DIR:-internal/registry/models}"
 codex_catalog="$catalog_dir/codex_client_models.json"

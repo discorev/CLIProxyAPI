@@ -401,6 +401,8 @@ func TestLogFormatterPrintsUsageLifecycleFields(t *testing.T) {
 		{"usage cache cleared", log.Fields{"provider": "codex", "auth_id": "a", "reason": "provider_changed"},
 			`usage cache cleared provider=codex auth_id="a" reason="provider_changed"`},
 		{"usage sweep started", log.Fields{}, `usage sweep started`},
+		{"reset auto-apply limited to listed providers: other providers are dry-run", log.Fields{"providers": "codex"},
+			`reset auto-apply limited to listed providers: other providers are dry-run providers=codex`},
 		{"usage sweep stopped", log.Fields{"reason": "stop_requested"}, `usage sweep stopped reason="stop_requested"`},
 	} {
 		t.Run(tt.message+"/"+tt.want, func(t *testing.T) {

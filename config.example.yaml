@@ -127,9 +127,11 @@ access:
 # Optional automatic spending of banked Codex reset credits and Claude reset grants.
 # Off by default; works with any routing strategy. Manual management resets stay available.
 # Codex credits apply when a window is exhausted and the credit expires before recovery,
-# or within the credit's last 15 minutes. Claude grants apply only when all Claude
-# credentials are exhausted with more than 60 minutes to recovery, when an expiring
-# grant would lapse before recovery, or in its last 15 minutes if no limit is required.
+# or within the credit's last 15 minutes. That last-15-minutes (last_chance) attempt is
+# made once per credit: a refusal such as nothing_to_reset is remembered until the credit
+# expires. Claude grants apply only when all Claude credentials are exhausted with more
+# than 60 minutes to recovery, when an expiring grant would lapse before recovery, or in
+# its last 15 minutes if no limit is required.
 # Enable auto-apply on only one instance per set of credentials. Each instance tracks
 # resets in memory, so two instances sharing credentials can both decide to spend.
 # Automatic resets send an idempotency key derived from the account and the reset, so
@@ -137,6 +139,7 @@ access:
 # reset-credits:
 #   auto-apply: false
 #   dry-run: false # log which resets auto-apply would use, without sending them; takes precedence over auto-apply
+#   providers: [] # optional, e.g. [codex]: only these providers spend resets; others are logged as dry-run. Empty means all
 
 # Routing strategy for selecting credentials when multiple match.
 routing:
