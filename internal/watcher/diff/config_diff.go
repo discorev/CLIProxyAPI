@@ -191,6 +191,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.ResetCredits.DryRun != newCfg.ResetCredits.DryRun {
 		changes = append(changes, fmt.Sprintf("reset-credits.dry-run: %t -> %t", oldCfg.ResetCredits.DryRun, newCfg.ResetCredits.DryRun))
 	}
+	if !reflect.DeepEqual(oldCfg.ResetCredits.Providers, newCfg.ResetCredits.Providers) {
+		changes = append(changes, fmt.Sprintf("reset-credits.providers: [%s] -> [%s]", strings.Join(oldCfg.ResetCredits.Providers, ", "), strings.Join(newCfg.ResetCredits.Providers, ", ")))
+	}
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
 	}

@@ -353,6 +353,9 @@ type QuotaExceeded struct {
 type ResetCreditsConfig struct {
 	AutoApply bool `yaml:"auto-apply" json:"auto-apply"`
 	DryRun    bool `yaml:"dry-run" json:"dry-run"`
+	// Providers limits live auto-apply to the listed providers (case-insensitive).
+	// Unlisted providers are evaluated as dry-run. Empty means all providers.
+	Providers []string `yaml:"providers,omitempty" json:"providers,omitempty"`
 }
 
 // RoutingConfig configures how credentials are selected for requests.

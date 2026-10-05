@@ -139,6 +139,7 @@ access:
 # reset-credits:
 #   auto-apply: false
 #   dry-run: false # log which resets auto-apply would use, without sending them; takes precedence over auto-apply
+#   providers: [] # optional, e.g. [codex]: only these providers spend resets; others are logged as dry-run. Empty means all
 
 # Routing strategy for selecting credentials when multiple match.
 routing:

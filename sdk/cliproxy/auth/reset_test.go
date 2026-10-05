@@ -9,6 +9,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -44,6 +45,8 @@ func (c *resetClock) advance(d time.Duration) { c.value.Add(int64(d)) }
 func setupResetManager(t *testing.T, provider string) (*Manager, *fakeResetExecutor, *resetClock) {
 	t.Helper()
 	manager := NewManager(nil, nil, nil)
+	// Automatic resets are live only with auto-apply on.
+	manager.SetConfig(&config.Config{ResetCredits: config.ResetCreditsConfig{AutoApply: true}})
 	clock := &resetClock{}
 	clock.value.Store(resetTestNow.UnixNano())
 	manager.usage.now = clock.now

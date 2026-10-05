@@ -289,3 +289,110 @@ func TestResetDryRunReloadGuards(t *testing.T) {
 		t.Fatalf("reload announcements=%d", announcements)
 	}
 }
+
+func TestResetProvidersLimitLiveApply(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		hook := setupTestLoggerHook(t)
+		log.SetLevel(log.InfoLevel)
+		manager, claude, _ := setupResetManager(t, "claude")
+		codex := &fakeResetExecutor{provider: "codex", ids: make(chan string, 32), fetch: claude.fetch}
+		manager.RegisterExecutor(codex)
+		manager.SetConfig(&config.Config{ResetCredits: config.ResetCreditsConfig{AutoApply: true, Providers: []string{" Codex "}}})
+		seedResetAuth(t, manager, "a", "claude", resetTestEntry("claude", 100, 5*time.Hour, 0))
+		seedResetAuth(t, manager, "b", "codex", resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour))
+		manager.StartResetLoop()
+		synctest.Wait()
+		if claude.calls.Load() != 0 || codex.calls.Load() != 1 || <-codex.ids != "b" {
+			t.Fatalf("claude calls=%d codex calls=%d", claude.calls.Load(), codex.calls.Load())
+		}
+		decisions := resetDecisionLogs(hook)
+		if len(decisions) != 1 || decisions[0].Data["auth_id"] != "a" || decisions[0].Data["rule"] != "all_exhausted" {
+			t.Fatalf("decisions=%+v", decisions)
+		}
+		announced := 0
+		for _, entry := range hook.AllEntries() {
+			if entry.Message == "reset auto-apply limited to listed providers: other providers are dry-run" && entry.Data["providers"] == "codex" {
+				announced++
+			}
+			if entry.Message == "reset auto-apply dry-run enabled: no resets will be sent" {
+				t.Fatal("global dry-run announced")
+			}
+		}
+		if announced != 1 {
+			t.Fatalf("announcements=%d", announced)
+		}
+		manager.StopResetLoop()
+		synctest.Wait()
+	})
+}
+
+func TestResetProvidersReloadGuards(t *testing.T) {
+	manager, executor, clock := setupResetManager(t, "codex")
+	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+	seedResetAuth(t, manager, "a", "codex", inventory)
+	_, cancel := context.WithCancel(context.Background())
+	manager.usage.resetCancel = cancel
+	entry := manager.usage.entries["a"]
+	for _, rc := range []config.ResetCreditsConfig{
+		{AutoApply: true, Providers: []string{"claude"}},
+		{AutoApply: true, DryRun: true, Providers: []string{"codex"}},
+		{Providers: []string{"codex"}},
+	} {
+		manager.SetConfig(&config.Config{ResetCredits: rc})
+		if _, _, _, err := manager.reserveReset(context.Background(), "a", entry); !errors.Is(err, ErrResetUnavailable) || len(manager.usage.resets) != 0 {
+			t.Fatalf("%+v: dry-run provider reservation was not refused: %v", rc, err)
+		}
+	}
+	manager.SetConfig(&config.Config{ResetCredits: config.ResetCreditsConfig{AutoApply: true, Providers: []string{"CODEX"}}})
+	auth, applier, state, err := manager.reserveReset(context.Background(), "a", entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A reload that drops codex from the list must stop the queued reset.
+	manager.SetConfig(&config.Config{ResetCredits: config.ResetCreditsConfig{AutoApply: true, Providers: []string{"claude"}}})
+	choice := codexResetChoice(inventory, clock.now())
+	result, _, err := manager.executeReset(context.Background(), auth, applier, state, inventory, *choice)
+	manager.releaseReset(state)
+	if !errors.Is(err, ErrResetUnavailable) || !result.NotSent || executor.calls.Load() != 0 || !state.attempted.IsZero() || !state.retryAt.IsZero() {
+		t.Fatalf("queued reset sent after provider reload: %+v %v %+v", result, err, state)
+	}
+}
+
+func TestResetModeFromConfig(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		cfg     *config.ResetCreditsConfig
+		want    resetMode
+		dryRun  []string
+		liveFor []string
+	}{
+		{"nil config", nil, resetMode{}, nil, []string{"codex", "claude"}},
+		{"auto-apply off", &config.ResetCreditsConfig{Providers: []string{"codex"}}, resetMode{allDryRun: true}, []string{"codex", "claude"}, nil},
+		{"dry-run", &config.ResetCreditsConfig{AutoApply: true, DryRun: true}, resetMode{allDryRun: true}, []string{"codex", "claude"}, nil},
+		{"all live", &config.ResetCreditsConfig{AutoApply: true, Providers: []string{" ", ""}}, resetMode{}, nil, []string{"codex", "claude"}},
+		{"listed", &config.ResetCreditsConfig{AutoApply: true, Providers: []string{"Codex", " codex ", "all"}},
+			resetMode{live: []string{"all", "codex"}}, []string{"claude"}, []string{"codex", " CODEX ", "all"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := &Manager{} // no config snapshot
+			if tt.cfg != nil {
+				manager = NewManager(nil, nil, nil)
+				manager.SetConfig(&config.Config{ResetCredits: *tt.cfg})
+			}
+			mode := manager.currentResetMode()
+			if !mode.equal(tt.want) {
+				t.Fatalf("mode=%+v want %+v", mode, tt.want)
+			}
+			for _, provider := range tt.dryRun {
+				if !mode.dryRunFor(provider) {
+					t.Errorf("%q should be dry-run", provider)
+				}
+			}
+			for _, provider := range tt.liveFor {
+				if mode.dryRunFor(provider) {
+					t.Errorf("%q should be live", provider)
+				}
+			}
+		})
+	}
+}

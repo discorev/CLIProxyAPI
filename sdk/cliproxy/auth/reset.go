@@ -75,7 +75,7 @@ func (m *Manager) reserveReset(ctx context.Context, id string, expected *usageEn
 		return nil, nil, nil, ErrResetUnavailable
 	}
 	if expected != nil {
-		if m.resetDryRun() || !m.automaticResetAvailable(auth, expected, state, m.usage.timeNow()) {
+		if m.resetDryRunFor(auth.Provider) || !m.automaticResetAvailable(auth, expected, state, m.usage.timeNow()) {
 			return nil, nil, nil, ErrResetUnavailable
 		}
 	}
@@ -147,9 +147,10 @@ func (m *Manager) currentResetAuth(auth *Auth, state *resetAttempt) *Auth {
 }
 
 func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApplier, state *resetAttempt, entry CredentialUsage, choice resetChoice) (ResetResult, CredentialUsage, error) {
-	// A config reload may enable dry-run after an automatic reset was queued.
-	// Release its reservation without sending or changing cooldown/backoff state.
-	if choice.rule != "manual" && m.resetDryRun() {
+	// A config reload may make this provider dry-run after an automatic reset
+	// was queued. Release its reservation without sending or changing
+	// cooldown/backoff state.
+	if choice.rule != "manual" && m.resetDryRunFor(auth.Provider) {
 		return ResetResult{Result: "unavailable", NotSent: true}, m.UsageSnapshot(auth.ID), ErrResetUnavailable
 	}
 	current := m.currentResetAuth(auth, state)

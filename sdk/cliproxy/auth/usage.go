@@ -99,7 +99,7 @@ func (t realUsageTicker) Ticks() <-chan time.Time { return t.C }
 
 type usageCache struct {
 	resetCancel    context.CancelFunc
-	resetDryRun    bool
+	resetMode      resetMode // last announced reset mode
 	resetDecisions map[resetDecisionKey]time.Time
 	resets         map[string]*resetAttempt
 	// lastChanceRefused maps Codex credits whose automatic last_chance attempt

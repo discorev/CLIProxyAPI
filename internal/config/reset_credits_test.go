@@ -24,4 +24,15 @@ func TestResetCreditsConfigDefaultsAndOptIn(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	body := []byte("config-version: 8\nreset-credits:\n  auto-apply: true\n  providers: [codex]\n")
+	cfg, err := ParseConfigBytes(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.ResetCredits.Providers) != 1 || cfg.ResetCredits.Providers[0] != "codex" {
+		t.Fatalf("providers=%v", cfg.ResetCredits.Providers)
+	}
+	if err := ValidateV8Config(body); err != nil {
+		t.Fatal(err)
+	}
 }

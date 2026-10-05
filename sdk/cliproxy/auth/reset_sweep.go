@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-// StartResetLoop enables automatic reset evaluation, spending only outside dry-run.
+// StartResetLoop enables automatic reset evaluation, spending only for live
+// (not dry-run) providers.
 // Service config opts in with auto-apply or dry-run; routing strategy is unrelated.
 func (m *Manager) StartResetLoop() {
 	m.usage.mu.Lock()
@@ -49,7 +50,7 @@ func (m *Manager) StopResetLoop() {
 	if m.usage.resetCancel != nil {
 		m.usage.resetCancel()
 		m.usage.resetCancel = nil
-		m.usage.resetDryRun = false
+		m.usage.resetMode = resetMode{}
 		m.usage.resetDecisions = nil
 	}
 }
@@ -146,13 +147,15 @@ func (m *Manager) sweepResets(ctx context.Context) {
 	if claude != nil {
 		selected = append(selected, *claude)
 	}
-	if m.resetDryRun() {
-		m.logResetDecisions(ctx, selected, now)
-		return
-	}
+	var dryRun []resetCandidate
 	for _, candidate := range selected {
-		m.startAutomaticReset(ctx, candidate)
+		if m.resetDryRunFor(candidate.auth.Provider) {
+			dryRun = append(dryRun, candidate)
+		} else {
+			m.startAutomaticReset(ctx, candidate)
+		}
 	}
+	m.logResetDecisions(ctx, dryRun, now)
 }
 
 func (m *Manager) lastChanceRefused(authID string, choice resetChoice) bool {
