@@ -126,7 +126,8 @@ func (m *Manager) sweepResets(ctx context.Context) {
 	var claude *resetCandidate
 	for _, candidate := range candidates {
 		if strings.EqualFold(candidate.auth.Provider, "codex") {
-			if choice := codexResetChoice(candidate.entry.CredentialUsage, now); choice != nil && !m.lastChanceRefused(candidate.auth.ID, *choice) {
+			refused := func(creditID string) bool { return m.lastChanceRefused(candidate.auth.ID, creditID) }
+			if choice := codexResetChoice(candidate.entry.CredentialUsage, now, refused); choice != nil {
 				candidate.choice = *choice
 				selected = append(selected, candidate)
 			}
@@ -158,13 +159,10 @@ func (m *Manager) sweepResets(ctx context.Context) {
 	m.logResetDecisions(ctx, dryRun, now)
 }
 
-func (m *Manager) lastChanceRefused(authID string, choice resetChoice) bool {
-	if choice.rule != "last_chance" {
-		return false
-	}
+func (m *Manager) lastChanceRefused(authID, creditID string) bool {
 	m.usage.mu.RLock()
 	defer m.usage.mu.RUnlock()
-	_, refused := m.usage.lastChanceRefused[resetCreditKey{authID, choice.creditID}]
+	_, refused := m.usage.lastChanceRefused[resetCreditKey{authID, creditID}]
 	return refused
 }
 

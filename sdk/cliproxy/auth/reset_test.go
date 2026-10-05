@@ -697,3 +697,28 @@ func TestResetManualCodexNotLimitedNotRemembered(t *testing.T) {
 		t.Fatal("manual not_limited was remembered")
 	}
 }
+
+func TestResetLoopCodexLastChanceTriesNextCreditAfterRefusal(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		manager, executor, _ := setupResetManager(t, "codex")
+		inventory := resetTestEntry("codex", 9, 5*time.Hour, 10*time.Minute)
+		inventory.Resets.Credits = append(inventory.Resets.Credits, ResetCredit{ID: "second", ExpiresAt: resetTestNow.Add(14 * time.Minute)})
+		seedResetAuth(t, manager, "a", "codex", inventory)
+		manager.usage.mu.Lock()
+		manager.usage.lastChanceRefused = map[resetCreditKey]time.Time{{"a", "credit"}: resetTestNow.Add(10 * time.Minute)}
+		manager.usage.mu.Unlock()
+		executor.apply = func(_ context.Context, _ *Auth, req ResetRequest) (ResetResult, error) {
+			if req.CreditID != "second" {
+				t.Errorf("credit=%q, want second", req.CreditID)
+			}
+			return ResetResult{Result: "reset"}, nil
+		}
+		manager.StartResetLoop()
+		synctest.Wait()
+		if executor.calls.Load() != 1 {
+			t.Fatalf("calls=%d", executor.calls.Load())
+		}
+		manager.StopResetLoop()
+		synctest.Wait()
+	})
+}

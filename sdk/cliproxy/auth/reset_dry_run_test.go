@@ -273,7 +273,7 @@ func TestResetDryRunReloadGuards(t *testing.T) {
 	manager.SetConfig(&config.Config{ResetCredits: config.ResetCreditsConfig{AutoApply: true, DryRun: true}})
 	manager.StartResetLoop()
 	manager.StartResetLoop()
-	choice := codexResetChoice(inventory, clock.now())
+	choice := codexResetChoice(inventory, clock.now(), nil)
 	result, _, err := manager.executeReset(context.Background(), auth, applier, state, inventory, *choice)
 	manager.releaseReset(state)
 	if !errors.Is(err, ErrResetUnavailable) || !result.NotSent || executor.calls.Load() != 0 || !state.attempted.IsZero() || !state.retryAt.IsZero() {
@@ -350,7 +350,7 @@ func TestResetProvidersReloadGuards(t *testing.T) {
 	}
 	// A reload that drops codex from the list must stop the queued reset.
 	manager.SetConfig(&config.Config{ResetCredits: config.ResetCreditsConfig{AutoApply: true, Providers: []string{"claude"}}})
-	choice := codexResetChoice(inventory, clock.now())
+	choice := codexResetChoice(inventory, clock.now(), nil)
 	result, _, err := manager.executeReset(context.Background(), auth, applier, state, inventory, *choice)
 	manager.releaseReset(state)
 	if !errors.Is(err, ErrResetUnavailable) || !result.NotSent || executor.calls.Load() != 0 || !state.attempted.IsZero() || !state.retryAt.IsZero() {

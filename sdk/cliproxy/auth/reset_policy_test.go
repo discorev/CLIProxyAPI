@@ -44,7 +44,7 @@ func TestResetCodexPolicy(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			entry := resetTestEntry("codex", tt.used, tt.recovery, tt.expiry)
-			got := codexResetChoice(entry, resetTestNow)
+			got := codexResetChoice(entry, resetTestNow, nil)
 			if (got == nil) != (tt.want == "") || got != nil && got.rule != tt.want {
 				t.Fatalf("choice = %+v, want %s", got, tt.want)
 			}
@@ -53,11 +53,11 @@ func TestResetCodexPolicy(t *testing.T) {
 	entry := resetTestEntry("codex", 100, 3*time.Hour, 4*time.Hour)
 	entry.Windows = append(entry.Windows, UsageWindow{Kind: "long", UsedPercent: 100, ResetsAt: resetTestNow.Add(10 * time.Hour)})
 	entry.Resets.Credits = append(entry.Resets.Credits, ResetCredit{ID: "earlier", ExpiresAt: resetTestNow.Add(2 * time.Hour)})
-	if got := codexResetChoice(entry, resetTestNow); got == nil || got.expires != entry.Resets.Credits[1].ExpiresAt {
+	if got := codexResetChoice(entry, resetTestNow, nil); got == nil || got.expires != entry.Resets.Credits[1].ExpiresAt {
 		t.Fatalf("did not use latest recovery/soonest credit: %+v", got)
 	}
 	entry.Windows[0].Scope, entry.Windows[1].Scope = "fable", "fable"
-	if got := codexResetChoice(entry, resetTestNow); got != nil {
+	if got := codexResetChoice(entry, resetTestNow, nil); got != nil {
 		t.Fatalf("scoped exhaustion triggered reset: %+v", got)
 	}
 }
@@ -219,5 +219,31 @@ func TestResetIdempotencyKeyIsSharedAcrossInstances(t *testing.T) {
 	}
 	if _, err := uuid.Parse(twoLeft); err != nil {
 		t.Fatalf("key is not a UUID: %q", twoLeft)
+	}
+}
+
+func TestResetCodexLastChanceSkipsRefusedCredits(t *testing.T) {
+	refusedFirst := func(id string) bool { return id == "first" }
+	for _, tt := range []struct {
+		name          string
+		used          float64
+		second        time.Duration
+		want, wantFor string
+	}{
+		{"second inside 15 minutes", 0, 14 * time.Minute, "last_chance", "second"},
+		{"second outside 15 minutes", 0, 16 * time.Minute, "", ""},
+		{"exhausted ignores refusals", 100, 14 * time.Minute, "exhausted", "first"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := resetTestEntry("codex", tt.used, 4*time.Hour, 10*time.Minute)
+			entry.Resets.Credits = []ResetCredit{
+				{ID: "second", ExpiresAt: resetTestNow.Add(tt.second)},
+				{ID: "first", ExpiresAt: resetTestNow.Add(10 * time.Minute)},
+			}
+			got := codexResetChoice(entry, resetTestNow, refusedFirst)
+			if (got == nil) != (tt.want == "") || got != nil && (got.rule != tt.want || got.creditID != tt.wantFor) {
+				t.Fatalf("choice = %+v, want %s %s", got, tt.want, tt.wantFor)
+			}
+		})
 	}
 }

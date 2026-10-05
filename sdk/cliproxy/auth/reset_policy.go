@@ -45,12 +45,21 @@ func exhaustedResetWindows(entry CredentialUsage, now time.Time) ([]string, time
 }
 
 func soonestResetCredit(resets *CredentialResets, now time.Time) *ResetCredit {
+	return soonestResetCreditExcept(resets, now, nil)
+}
+
+// soonestResetCreditExcept ignores credits for which skip reports true; a nil
+// skip considers every unexpired credit.
+func soonestResetCreditExcept(resets *CredentialResets, now time.Time, skip func(creditID string) bool) *ResetCredit {
 	if resets == nil {
 		return nil
 	}
 	var chosen *ResetCredit
 	for i := range resets.Credits {
 		credit := &resets.Credits[i]
+		if skip != nil && skip(credit.ID) {
+			continue
+		}
 		if credit.ExpiresAt.After(now) && (chosen == nil || credit.ExpiresAt.Before(chosen.ExpiresAt)) {
 			chosen = credit
 		}
@@ -113,7 +122,11 @@ func grantResetChoice(grant *ResetGrant, rule string) *resetChoice {
 	return choice
 }
 
-func codexResetChoice(entry CredentialUsage, now time.Time) *resetChoice {
+// codexResetChoice spends the soonest credit when it would expire before an
+// exhausted account recovers. Otherwise last_chance spends the soonest credit
+// within 15 minutes of expiry, skipping credits whose last_chance attempt was
+// already refused (refused may be nil). Refusals never block the exhausted rule.
+func codexResetChoice(entry CredentialUsage, now time.Time, refused func(creditID string) bool) *resetChoice {
 	credit := soonestResetCredit(entry.Resets, now)
 	if credit == nil {
 		return nil
@@ -122,7 +135,8 @@ func codexResetChoice(entry CredentialUsage, now time.Time) *resetChoice {
 	if !recovery.IsZero() && credit.ExpiresAt.Before(recovery) {
 		return &resetChoice{creditID: credit.ID, expires: credit.ExpiresAt, rule: "exhausted"}
 	}
-	if !credit.ExpiresAt.After(now.Add(15 * time.Minute)) {
+	credit = soonestResetCreditExcept(entry.Resets, now, refused)
+	if credit != nil && !credit.ExpiresAt.After(now.Add(15*time.Minute)) {
 		return &resetChoice{creditID: credit.ID, expires: credit.ExpiresAt, rule: "last_chance"}
 	}
 	return nil
