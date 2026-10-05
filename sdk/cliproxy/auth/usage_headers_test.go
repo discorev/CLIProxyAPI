@@ -181,3 +181,33 @@ func TestObserveCodexHeadersDropsWindowOfEmptySlot(t *testing.T) {
 		})
 	}
 }
+
+func TestObserveCodexHeadersWithBothSlotsEmptyPrunesUnscopedWindows(t *testing.T) {
+	now := time.Unix(1791070406, 0)
+	weekly := time.Unix(1791590904, 0)
+	empty := http.Header{}
+	for _, slot := range []string{"Primary", "Secondary"} {
+		empty.Set("X-Codex-"+slot+"-Used-Percent", "0")
+		empty.Set("X-Codex-"+slot+"-Window-Minutes", "0")
+		empty.Set("X-Codex-"+slot+"-Reset-At", "")
+		empty.Set("X-Codex-"+slot+"-Reset-After-Seconds", "0")
+	}
+	manager := NewManager(nil, nil, nil)
+	auth := registerUsageAuth(t, manager, "codex", "codex")
+	manager.usage.mu.Lock()
+	manager.usage.entries = map[string]*usageEntry{"codex": {
+		CredentialUsage: CredentialUsage{Windows: []UsageWindow{
+			{Kind: "7d", Length: 604800, UsedPercent: 100, ResetsAt: weekly},
+			{Kind: "7d", Scope: "fable", Length: 604800, UsedPercent: 100, ResetsAt: weekly},
+		}},
+		windowVersions: map[string]uint64{"7d:": 0, "7d:fable": 0},
+	}}
+	manager.usage.mu.Unlock()
+	manager.mu.Lock()
+	manager.observeUsageHeadersLocked(auth, empty, now)
+	manager.mu.Unlock()
+	got := manager.usageSnapshot("codex")
+	if len(got.Windows) != 1 || got.Windows[0].Scope != "fable" || got.Windows[0].UsedPercent != 100 {
+		t.Fatalf("windows = %+v, want only the scoped fable window", got.Windows)
+	}
+}

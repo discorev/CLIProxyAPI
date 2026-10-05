@@ -47,11 +47,12 @@ func (m *Manager) observeUsageHeadersLocked(auth *Auth, headers http.Header, now
 	defer m.usage.mu.Unlock()
 	next := cloneUsageEntry(m.usage.entries[auth.ID])
 	windows, complete := usageWindowsFromHeaders(auth.Provider, normalized, next.Windows, now)
-	if len(windows) == 0 {
+	if len(windows) == 0 && !complete {
 		return
 	}
 	next.headerVersion++
 	if complete {
+		next.completeHeaderVersion = next.headerVersion
 		// The headers listed every credential-wide window, so a cached one
 		// they omit (e.g. a now-empty slot) is stale. Scoped windows come only
 		// from usage fetches and are kept.
