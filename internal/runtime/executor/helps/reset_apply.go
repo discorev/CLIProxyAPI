@@ -116,7 +116,14 @@ func sendReset(ctx context.Context, auth *cliproxyauth.Auth, endpoint string, bo
 			log.Debug("failed to close reset response body")
 		}
 	}()
-	responseBody, errRead := io.ReadAll(io.LimitReader(response.Body, 64*1024))
+	// Only a 2xx outcome depends on the body. Other statuses are decided by the
+	// status alone, so a slow error body cannot delay the outcome or hold the
+	// reservation (no timeout may be set once connected).
+	var responseBody []byte
+	var errRead error
+	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		responseBody, errRead = io.ReadAll(io.LimitReader(response.Body, 64*1024))
+	}
 	return resetResponseResult(response.StatusCode, responseBody, errRead, claude)
 }
 
