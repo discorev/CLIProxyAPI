@@ -134,27 +134,51 @@ func canonicalCodexWSJSON(raw []byte, item bool) ([]byte, error) {
 	return json.Marshal(value)
 }
 
+// codexWSServerItemTypes lists the output item types whose top-level id and
+// status are server-assigned bookkeeping that clients drop or rewrite when
+// they echo the item back: message, reasoning and function_call (what the
+// Responses, Chat Completions and Claude round trips need), plus the other
+// Codex CLI call items that carry their own call_id. Types where the id is
+// what the model refers to are deliberately absent: item_reference,
+// image_generation_call and web_search_call (an input item can reference an
+// earlier call by id), and every unknown type.
+var codexWSServerItemTypes = map[string]struct{}{
+	"message":          {},
+	"reasoning":        {},
+	"function_call":    {},
+	"custom_tool_call": {},
+	"local_shell_call": {},
+	"tool_search_call": {},
+}
+
 // normalizeCodexWSItem removes, at their known locations only, the fields
 // that differ between a server output item and the same item echoed back by a
 // client:
-//   - the item's own id and status, which clients omit or rewrite and which do
-//     not change what the model sees;
-//   - empty annotations and logprobs arrays on output_text parts of a message,
-//     which the server emits and clients drop;
+//   - the top-level id and status of the output item types in
+//     codexWSServerItemTypes; a reasoning item keeps its id when it has no
+//     encrypted_content, because the id is then the only reference to it;
+//   - empty annotations and logprobs arrays on output_text parts of a message;
 //   - a null or empty content on a reasoning item, which some translators add
 //     to the encrypted reasoning they replay ("content": null) and the server
 //     omits.
 //
-// Nothing nested deeper is touched: an explicit null or empty array inside
-// arguments, tool schemas or any other payload is content.
+// Nothing else is touched: an id on any other item type, and an explicit null
+// or empty array inside arguments, tool schemas or any other payload, is
+// content.
 func normalizeCodexWSItem(value any) {
 	item, ok := value.(map[string]any)
 	if !ok {
 		return
 	}
-	delete(item, "id")
+	itemType, _ := item["type"].(string)
+	if _, known := codexWSServerItemTypes[itemType]; !known {
+		return
+	}
+	if _, encrypted := item["encrypted_content"].(string); itemType != "reasoning" || encrypted {
+		delete(item, "id")
+	}
 	delete(item, "status")
-	switch itemType, _ := item["type"].(string); itemType {
+	switch itemType {
 	case "reasoning":
 		if codexWSEmptyJSON(item["content"]) {
 			delete(item, "content")

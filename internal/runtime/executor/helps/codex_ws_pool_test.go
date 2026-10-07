@@ -313,6 +313,11 @@ func TestCodexWSItemDigestNormalizesOnlyKnownMetadata(t *testing.T) {
 			b:    `{"type":"function_call","call_id":"c1","name":"shell","arguments":"{}"}`,
 		},
 		{
+			name: "custom tool call id and status",
+			a:    `{"id":"ctc_1","type":"custom_tool_call","status":"completed","call_id":"c1","name":"apply_patch","input":"*** Begin Patch"}`,
+			b:    `{"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"*** Begin Patch"}`,
+		},
+		{
 			name: "empty annotations and logprobs on output_text",
 			a:    `{"type":"message","role":"assistant","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"hi"}]}`,
 			b:    `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}`,
@@ -376,6 +381,31 @@ func TestCodexWSItemDigestNormalizesOnlyKnownMetadata(t *testing.T) {
 			b:    `{"type":"custom_tool_call_output","call_id":"c1","output":{}}`,
 		},
 		{
+			name: "item_reference id",
+			a:    `{"type":"item_reference","id":"msg_A"}`,
+			b:    `{"type":"item_reference","id":"msg_B"}`,
+		},
+		{
+			name: "image_generation_call id",
+			a:    `{"type":"image_generation_call","id":"ig_A"}`,
+			b:    `{"type":"image_generation_call","id":"ig_B"}`,
+		},
+		{
+			name: "unknown item type id",
+			a:    `{"type":"future_item","id":"x_A","payload":"p"}`,
+			b:    `{"type":"future_item","id":"x_B","payload":"p"}`,
+		},
+		{
+			name: "status on tool_search_output",
+			a:    `{"type":"tool_search_output","call_id":"ts1","status":"completed","tools":[]}`,
+			b:    `{"type":"tool_search_output","call_id":"ts1","status":"incomplete","tools":[]}`,
+		},
+		{
+			name: "reasoning id without encrypted content",
+			a:    `{"type":"reasoning","id":"rs_A","summary":[]}`,
+			b:    `{"type":"reasoning","id":"rs_B","summary":[]}`,
+		},
+		{
 			name: "reasoning summary dropped",
 			a:    `{"type":"reasoning","summary":[],"encrypted_content":"enc"}`,
 			b:    `{"type":"reasoning","encrypted_content":"enc"}`,
@@ -408,7 +438,7 @@ func TestCodexWSIncrementalItemsKeepsNestedHistoryChanges(t *testing.T) {
 		`{"type":"message","role":"user","content":[{"type":"input_text","text":"q2"}]}`,
 	}
 
-	unchanged := withHistory(append([]string{strings.Replace(toolSearch, `"status":"completed",`, ``, 1)}, echo...)...)
+	unchanged := withHistory(append([]string{toolSearch}, echo...)...)
 	if items, ok := codexWSIncrementalItems(newCodexWSRequestShape(unchanged), baseline); !ok || len(items) != 1 {
 		t.Fatalf("unchanged history = (%d items, %t), want an incremental request with the new message", len(items), ok)
 	}
