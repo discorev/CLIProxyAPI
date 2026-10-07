@@ -285,18 +285,29 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	if ctx.Err() != nil {
 		return
 	}
-	models = s.filterRestrictedModels(a, models)
-	models = applyOAuthModelAliasForAuth(s.cfg, provider, authKind, a.Attributes, models)
-	if ctx.Err() != nil {
-		return
-	}
 	key := provider
 	if key == "" {
 		key = strings.ToLower(strings.TrimSpace(a.Provider))
 	}
-	models = s.appendPluginModels(key, models)
+	pluginModels := s.pluginModelsForProvider(key)
+	if ctx.Err() != nil {
+		return
+	}
+	// The fetch must wait until this registration commits. Plugin discovery runs
+	// first, so no plugin call holds the access-cache lock.
+	s.restrictedAccess.mu.RLock()
+	defer s.restrictedAccess.mu.RUnlock()
+	models = s.filterRestrictedModelsLocked(a, models)
+	models = applyOAuthModelAliasForAuth(s.cfg, provider, authKind, a.Attributes, models)
+	if ctx.Err() != nil {
+		return
+	}
+	models = appendUniqueModels(models, s.filterRestrictedModelsLocked(a, pluginModels))
 	if len(models) > 0 {
 		models = applyOAuthSettingsForAuth(s.cfg, provider, authKind, models)
+		if s.restrictedAccess.beforeCommit != nil {
+			s.restrictedAccess.beforeCommit()
+		}
 		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		if strings.EqualFold(strings.TrimSpace(a.Provider), "antigravity") {
 			s.asyncProbeAntigravityCapabilities(ctx, a, key)

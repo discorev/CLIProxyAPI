@@ -246,13 +246,24 @@ func GetXAIModels() []*ModelInfo {
 // not depend on remote models.json updates. Built-ins replace any matching IDs
 // already present in the provided slice.
 func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
-	return upsertModelInfos(models,
+	builtins := []*ModelInfo{
 		codexBuiltinImage15ModelInfo(),
 		codexBuiltinImageModelInfo(),
 		codexBuiltinImage25FlareModelInfo(),
 		codexBuiltinImage25SunburstModelInfo(),
 		codexBuiltinImage25ModelInfo(),
-	)
+	}
+	for _, model := range models {
+		if model == nil || !model.RestrictedAccess {
+			continue
+		}
+		for _, builtin := range builtins {
+			if strings.EqualFold(strings.TrimSpace(model.ID), builtin.ID) {
+				builtin.RestrictedAccess = true
+			}
+		}
+	}
+	return upsertModelInfos(models, builtins...)
 }
 
 // WithXAIBuiltins injects hard-coded xAI image/video model definitions that should

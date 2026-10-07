@@ -38,3 +38,41 @@ func TestRestrictedAccessCatalogFlagChangeTriggersRefresh(t *testing.T) {
 		t.Fatalf("restricted_access flag change did not refresh Claude registrations: %v", changed)
 	}
 }
+
+func TestCodexBuiltinsPreserveCatalogRestriction(t *testing.T) {
+	const id = "gpt-image-2.5-flare"
+	// Every tier overlays the built-in metadata, but the catalog owns access.
+	modelsCatalogStore.mu.Lock()
+	original := modelsCatalogStore.data
+	modelsCatalogStore.data = &staticModelsJSON{
+		CodexFree: []*ModelInfo{{ID: id, RestrictedAccess: true}},
+		CodexTeam: []*ModelInfo{{ID: id, RestrictedAccess: true}},
+		CodexPlus: []*ModelInfo{{ID: id, RestrictedAccess: true}},
+		CodexPro:  []*ModelInfo{{ID: id, RestrictedAccess: true}},
+	}
+	modelsCatalogStore.mu.Unlock()
+	t.Cleanup(func() {
+		modelsCatalogStore.mu.Lock()
+		modelsCatalogStore.data = original
+		modelsCatalogStore.mu.Unlock()
+	})
+	for _, tier := range []struct {
+		name string
+		get  func() []*ModelInfo
+	}{
+		{"free", GetCodexFreeModels}, {"team", GetCodexTeamModels},
+		{"plus", GetCodexPlusModels}, {"pro", GetCodexProModels},
+	} {
+		t.Run(tier.name, func(t *testing.T) {
+			for _, model := range tier.get() {
+				if model.ID == id {
+					if !model.RestrictedAccess || model.DisplayName != "GPT Image 2.5 Flare" {
+						t.Fatalf("built-in lost catalog access flag or built-in metadata: %+v", model)
+					}
+					return
+				}
+			}
+			t.Fatalf("built-in %q not found", id)
+		})
+	}
+}

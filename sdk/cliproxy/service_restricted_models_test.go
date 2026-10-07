@@ -13,6 +13,8 @@ import (
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
@@ -50,14 +52,17 @@ func TestRestrictedModelFilterFailsClosedExceptConfiguredModels(t *testing.T) {
 				{ID: "restricted", RestrictedAccess: true},
 				{ID: "configured", RestrictedAccess: true, UserDefined: true},
 			}
-			wantUnknown := []string{"ordinary", "configured"}
+			wantUnknown := []string{"ordinary"}
+			if provider == "gemini" {
+				wantUnknown = []string{"ordinary", "configured"}
+			}
 			if got := modelIDs(service.filterRestrictedModels(auth, models)); !reflect.DeepEqual(got, wantUnknown) {
 				t.Fatalf("unknown access models = %v, want %v", got, wantUnknown)
 			}
 			service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{
 				auth.ID: {identity: restrictedModelIdentity(auth), listed: map[string]struct{}{"restricted": {}}, fetched: true},
 			}
-			wantGranted := []string{"ordinary", "restricted", "configured"}
+			wantGranted := []string{"ordinary", "restricted"}
 			if provider == "gemini" {
 				wantGranted = wantUnknown // A non-OAuth provider cannot prove access.
 			}
@@ -96,6 +101,9 @@ func TestConfiguredAPIKeyModelsRemainAvailable(t *testing.T) {
 				cfg.CodexKey = []config.CodexKey{{APIKey: "fake-key", Models: []internalconfig.CodexModel{{Name: name}}}}
 			}
 			service := &Service{cfg: cfg}
+			service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+				return map[string]struct{}{name: {}, "unconfigured-restricted": {}}
+			}
 			reg := GlobalModelRegistry()
 			t.Cleanup(func() { reg.UnregisterClient(id) })
 			service.registerModelsForAuth(context.Background(), &coreauth.Auth{
@@ -104,6 +112,10 @@ func TestConfiguredAPIKeyModelsRemainAvailable(t *testing.T) {
 			})
 			if got := modelIDs(reg.GetModelsForClient(id)); !reflect.DeepEqual(got, []string{name}) {
 				t.Fatalf("explicit %s API-key models = %v, want %s", provider, got, name)
+			}
+			apiKey := &coreauth.Auth{ID: id, Provider: provider, Attributes: map[string]string{"api_key": "fake-key", "source": "config:" + provider, "config_index": "0"}}
+			if got := service.filterRestrictedModels(apiKey, []*ModelInfo{{ID: "unconfigured-restricted", UserDefined: true}}); len(got) != 0 {
+				t.Fatalf("unconfigured API-key model bypassed catalog restriction: %v", modelIDs(got))
 			}
 		})
 	}
@@ -175,6 +187,163 @@ func TestRestrictedModelFetchRetainsLastListAndOnlyReregistersOnGrantChanges(t *
 	if got := reg.ClientRegistrationEpoch(id); got != removedEpoch {
 		t.Fatalf("removed credential's stale fetch re-registered: epoch %d != %d", got, removedEpoch)
 	}
+}
+
+func TestRestrictedCodexBuiltinHiddenUntilGranted(t *testing.T) {
+	const modelID = "gpt-image-2.5-flare"
+	auth := restrictedTestAuth("codex", "restricted-codex-builtin-test")
+	service := &Service{}
+	models := registry.WithCodexBuiltins([]*registry.ModelInfo{{ID: modelID, RestrictedAccess: true}})
+	if containsModelID(service.filterRestrictedModels(auth, models), modelID) {
+		t.Fatal("catalog-restricted built-in visible with unknown access")
+	}
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{
+		auth.ID: {identity: restrictedModelIdentity(auth), fetched: true, listed: map[string]struct{}{modelID: {}}},
+	}
+	if !containsModelID(service.filterRestrictedModels(auth, models), modelID) {
+		t.Fatal("granted built-in model was hidden")
+	}
+}
+
+func TestRestrictedPluginModelsCannotBypassCatalogAccess(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		for _, mode := range []string{"static", "auth-bound"} {
+			t.Run(provider+"/"+mode, func(t *testing.T) {
+				const restricted = "restricted-plugin-model"
+				id := provider + "-" + mode + "-restricted-plugin-test"
+				auth := restrictedTestAuth(provider, id)
+				service := &Service{cfg: &config.Config{}, pluginHost: pluginhost.New()}
+				service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+					return map[string]struct{}{restricted: {}}
+				}
+				reg := GlobalModelRegistry()
+				t.Cleanup(func() { reg.UnregisterClient(id) })
+				pluginModels := []*ModelInfo{{ID: restricted, UserDefined: true}, {ID: "ordinary-plugin-model"}}
+				if mode == "static" {
+					original := pluginHostModelsForProvider
+					pluginHostModelsForProvider = func(_ *pluginhost.Host, key string) []*ModelInfo {
+						if key != provider {
+							t.Errorf("plugin queried for provider %q, want %q", key, provider)
+						}
+						return pluginModels
+					}
+					t.Cleanup(func() { pluginHostModelsForProvider = original })
+				} else {
+					original := pluginHostModelsForAuth
+					pluginHostModelsForAuth = func(_ *pluginhost.Host, _ context.Context, _ *coreauth.Auth) pluginhost.AuthModelResult {
+						return pluginhost.AuthModelResult{Handled: true, Models: pluginModels}
+					}
+					t.Cleanup(func() { pluginHostModelsForAuth = original })
+				}
+				check := func(wantRestricted bool) {
+					t.Helper()
+					service.registerModelsForAuth(context.Background(), auth)
+					foundRestricted, foundOrdinary := false, false
+					for _, model := range reg.GetModelsForClient(id) {
+						if model.ID == restricted {
+							foundRestricted = true
+						}
+						if model.ID == "ordinary-plugin-model" {
+							foundOrdinary = true
+						}
+					}
+					if foundRestricted != wantRestricted || !foundOrdinary {
+						t.Fatalf("plugin registration: restricted=%v ordinary=%v, want restricted=%v", foundRestricted, foundOrdinary, wantRestricted)
+					}
+				}
+				check(false) // Unknown grants fail closed, even with UserDefined=true.
+				service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{
+					id: {identity: restrictedModelIdentity(auth), listed: map[string]struct{}{}, fetched: true},
+				}
+				check(false) // Known denial also fails closed.
+				service.restrictedAccess.entries[id].listed[restricted] = struct{}{}
+				check(true)
+			})
+		}
+	}
+}
+
+func TestRestrictedRevocationCannotBeUndoneByConcurrentRegistration(t *testing.T) {
+	const id = "restricted-concurrent-revocation-test"
+	const restricted = "restricted-plugin-race-model"
+	auth := restrictedTestAuth("codex", id)
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+		return map[string]struct{}{restricted: {}}
+	}
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{
+		id: {identity: restrictedModelIdentity(auth), listed: map[string]struct{}{restricted: {}}, fetched: true},
+	}
+	reg := GlobalModelRegistry()
+	t.Cleanup(func() { reg.UnregisterClient(id) })
+	original := pluginHostModelsForProvider
+	pluginHostModelsForProvider = func(_ *pluginhost.Host, _ string) []*ModelInfo {
+		return []*ModelInfo{{ID: restricted}}
+	}
+	t.Cleanup(func() { pluginHostModelsForProvider = original })
+	service.registerModelsForAuth(context.Background(), auth)
+	if !containsModelID(reg.GetModelsForClient(id), restricted) {
+		t.Fatal("fixture failed to register granted model")
+	}
+	filtered := make(chan struct{})
+	release := make(chan struct{})
+	service.restrictedAccess.beforeCommit = func() {
+		service.restrictedAccess.beforeCommit = nil // Only pause the stale registration.
+		close(filtered)
+		<-release
+	}
+	registrationDone := make(chan struct{})
+	go func() {
+		defer close(registrationDone)
+		service.registerModelsForAuth(context.Background(), auth)
+	}()
+	<-filtered
+	readyToPublish := make(chan struct{})
+	service.restrictedAccess.beforePublish = func() { close(readyToPublish) }
+	entry := service.restrictedAccess.entries[id]
+	fetchDone := make(chan struct{})
+	go func() {
+		defer close(fetchDone)
+		service.fetchRestrictedModels(context.Background(), auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
+			return nil, nil
+		}), entry)
+	}()
+	<-readyToPublish // Fetch is ready, but the in-flight registration owns the access snapshot.
+	writerBlocked := !service.restrictedAccess.mu.TryLock()
+	if !writerBlocked {
+		service.restrictedAccess.mu.Unlock()
+	}
+	close(release)
+	<-registrationDone
+	<-fetchDone
+	if !writerBlocked {
+		t.Fatal("revocation could publish between filtering and the registry commit")
+	}
+	if containsModelID(reg.GetModelsForClient(id), restricted) {
+		t.Fatal("concurrent stale registration restored the revoked model")
+	}
+	// A subsequent identical fetch does not re-register; the first refresh must win.
+	service.restrictedAccess.beforePublish = nil
+	epoch := reg.ClientRegistrationEpoch(id)
+	service.fetchRestrictedModels(context.Background(), auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
+		return nil, nil
+	}), entry)
+	if got := reg.ClientRegistrationEpoch(id); got != epoch {
+		t.Fatalf("unchanged denial unexpectedly re-registered: %d != %d", got, epoch)
+	}
+}
+
+func containsModelID(models []*ModelInfo, id string) bool {
+	for _, model := range models {
+		if model.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 type restrictedRoundTripFunc func(*http.Request) (*http.Response, error)

@@ -32,6 +32,8 @@ type restrictedModelAccessEntry struct {
 
 type restrictedModelAccessCache struct {
 	mu            sync.RWMutex
+	beforeCommit  func() // Test hook: pause after filtering but before the registry commit.
+	beforePublish func() // Test hook: observe a fetch before publishing its result.
 	entries       map[string]*restrictedModelAccessEntry
 	ctx           context.Context
 	started       bool
@@ -68,14 +70,37 @@ func restrictedModelIdentity(auth *coreauth.Auth) string {
 	return fmt.Sprintf("%s:%x", provider, sha256.Sum256([]byte(token)))
 }
 
-// filterRestrictedModels applies only to catalog entries. Explicit API-key models
-// are created independently and retain their existing configuration behavior.
+// filterRestrictedModels uses catalog IDs as the authority for Claude and Codex,
+// including plugin models that do not carry the catalog's RestrictedAccess flag.
 func (s *Service) filterRestrictedModels(auth *coreauth.Auth, models []*ModelInfo) []*ModelInfo {
 	if len(models) == 0 {
 		return models
 	}
-	identity := restrictedModelIdentity(auth)
 	s.restrictedAccess.mu.RLock()
+	defer s.restrictedAccess.mu.RUnlock()
+	return s.filterRestrictedModelsLocked(auth, models)
+}
+
+// filterRestrictedModelsLocked must be called under the access cache's RLock.
+// Registration holds that lock through RegisterClient: a revoked grant cannot
+// be published between filtering and the registry commit. This path must never
+// acquire the cache lock again; RegisterClient's model hook runs asynchronously.
+func (s *Service) filterRestrictedModelsLocked(auth *coreauth.Auth, models []*ModelInfo) []*ModelInfo {
+	if len(models) == 0 {
+		return models
+	}
+	identity := restrictedModelIdentity(auth)
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	var restricted map[string]struct{}
+	var explicit map[string]struct{}
+	if provider == "claude" || provider == "codex" {
+		restrictedIDs := s.restrictedAccess.restrictedIDs
+		if restrictedIDs == nil {
+			restrictedIDs = restrictedCatalogIDs
+		}
+		restricted = restrictedIDs(provider)
+		explicit = s.explicitRestrictedModelIDs(auth)
+	}
 	entry := s.restrictedAccess.entries[auth.ID]
 	var listed map[string]struct{}
 	if entry != nil && entry.fetched && entry.identity == identity && identity != "" {
@@ -86,16 +111,46 @@ func (s *Service) filterRestrictedModels(auth *coreauth.Auth, models []*ModelInf
 		if model == nil {
 			continue
 		}
-		if !model.RestrictedAccess || model.UserDefined {
+		_, catalogRestricted := restricted[model.ID]
+		if (!catalogRestricted && !model.RestrictedAccess) || (provider != "claude" && provider != "codex" && model.UserDefined) {
 			filtered = append(filtered, model)
 			continue
 		}
-		if _, ok := listed[model.ID]; ok {
+		if _, configured := explicit[model.ID]; configured {
+			filtered = append(filtered, model)
+			continue
+		}
+		if _, granted := listed[model.ID]; granted {
 			filtered = append(filtered, model)
 		}
 	}
-	s.restrictedAccess.mu.RUnlock()
 	return filtered
+}
+
+// Only a model explicitly named in an API key's own config.models list may
+// bypass an unknown or denied OAuth grant. Plugin UserDefined metadata cannot.
+func (s *Service) explicitRestrictedModelIDs(auth *coreauth.Auth) map[string]struct{} {
+	if auth.AuthKind() != coreauth.AuthKindAPIKey {
+		return nil
+	}
+	var models []*ModelInfo
+	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
+	case "claude":
+		if entry := s.resolveConfigClaudeKey(auth); entry != nil {
+			models = buildClaudeConfigModels(entry)
+		}
+	case "codex":
+		if entry := s.resolveConfigCodexKey(auth); entry != nil {
+			models = buildCodexConfigModels(entry)
+		}
+	}
+	ids := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		if model != nil {
+			ids[model.ID] = struct{}{}
+		}
+	}
+	return ids
 }
 
 func (s *Service) dropRestrictedModelAccess(id string) {
@@ -205,6 +260,9 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 		}
 	}
 	cache := &s.restrictedAccess
+	if cache.beforePublish != nil {
+		cache.beforePublish()
+	}
 	cache.mu.Lock()
 	if cache.entries[auth.ID] != entry {
 		cache.mu.Unlock() // Removed or replaced credentials cannot publish stale grants.
