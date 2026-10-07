@@ -120,6 +120,13 @@ type CodexWSPool struct {
 	pendingTotal  int
 	pendingByAuth map[string]int
 
+	// generation and authGeneration advance whenever sockets are invalidated
+	// (pool disabled or closed, credential removed). A dial reserves its slot
+	// under one generation; adopt compares it, so a handshake that completes
+	// after the invalidation serves its own request but never joins the pool.
+	generation     uint64
+	authGeneration map[string]uint64
+
 	nextID         uint64
 	janitorRunning bool
 	stats          CodexWSPoolStats
@@ -131,14 +138,15 @@ func NewCodexWSPool(settings CodexWSPoolSettings, now func() time.Time) *CodexWS
 		now = time.Now
 	}
 	return &CodexWSPool{
-		settings:      settings.normalized(),
-		now:           now,
-		conns:         make(map[*codexWSConn]struct{}),
-		groups:        make(map[codexWSGroupKey][]*codexWSConn),
-		authsBy:       make(map[string]map[string]struct{}),
-		pending:       make(map[codexWSGroupKey]int),
-		backoff:       make(map[string]time.Time),
-		pendingByAuth: make(map[string]int),
+		settings:       settings.normalized(),
+		now:            now,
+		conns:          make(map[*codexWSConn]struct{}),
+		groups:         make(map[codexWSGroupKey][]*codexWSConn),
+		authsBy:        make(map[string]map[string]struct{}),
+		pending:        make(map[codexWSGroupKey]int),
+		backoff:        make(map[string]time.Time),
+		pendingByAuth:  make(map[string]int),
+		authGeneration: make(map[string]uint64),
 	}
 }
 
@@ -162,6 +170,7 @@ func (p *CodexWSPool) Configure(settings CodexWSPoolSettings) {
 	p.settings = settings
 	var toClose []*codexWSConn
 	if !settings.Enabled {
+		p.generation++
 		toClose = p.retireLocked(func(*codexWSConn) bool { return true })
 	} else {
 		toClose = p.evictLocked(p.now())
@@ -201,6 +210,7 @@ func (p *CodexWSPool) CloseAuth(authID string, reason string) {
 		return
 	}
 	p.mu.Lock()
+	p.authGeneration[authID]++
 	toClose := p.retireLocked(func(c *codexWSConn) bool { return c.group.authID == authID })
 	for key := range p.backoff {
 		if strings.HasPrefix(key, authID+"\x00") {
@@ -217,6 +227,7 @@ func (p *CodexWSPool) CloseAll(reason string) {
 		return
 	}
 	p.mu.Lock()
+	p.generation++
 	toClose := p.retireLocked(func(*codexWSConn) bool { return true })
 	p.mu.Unlock()
 	closeCodexWSConns(toClose, reason)
@@ -380,6 +391,10 @@ type codexWSLease struct {
 	conn        *codexWSConn
 	incremental []string
 	responseID  string
+
+	// Invalidation generations at reservation time, checked by adopt.
+	generation     uint64
+	authGeneration uint64
 }
 
 type codexWSAcquireRequest struct {
@@ -486,7 +501,7 @@ func (p *CodexWSPool) acquire(req codexWSAcquireRequest) (lease codexWSLease, ok
 	}
 
 	if p.reserveLocked(req.group, &toClose) {
-		return codexWSLease{}, true
+		return codexWSLease{generation: p.generation, authGeneration: p.authGeneration[req.group.authID]}, true
 	}
 	if lru != nil {
 		return pick(lru, false), true
@@ -551,8 +566,11 @@ func (p *CodexWSPool) dialFailed(group codexWSGroupKey, authFP string) {
 }
 
 // adopt registers a freshly dialed socket in its reserved slot, leased to the
-// caller, and starts its reader.
-func (p *CodexWSPool) adopt(group codexWSGroupKey, ws *websocket.Conn, compat, authFP string, handshake http.Header) *codexWSConn {
+// caller, and starts its reader. When the pool was disabled or closed, or the
+// credential removed, while the handshake was in flight, the socket still
+// serves the request that dialed it but is retired, so it closes on release
+// instead of joining the pool.
+func (p *CodexWSPool) adopt(lease codexWSLease, group codexWSGroupKey, ws *websocket.Conn, compat, authFP string, handshake http.Header) *codexWSConn {
 	c := &codexWSConn{
 		pool:      p,
 		ws:        ws,
@@ -571,6 +589,7 @@ func (p *CodexWSPool) adopt(group codexWSGroupKey, ws *websocket.Conn, compat, a
 	c.created = now
 	c.lastUsed = now
 	c.busy = true
+	c.retired = !p.settings.Enabled || lease.generation != p.generation || lease.authGeneration != p.authGeneration[group.authID]
 	p.conns[c] = struct{}{}
 	p.groups[group] = append(p.groups[group], c)
 	auths := p.authsBy[group.conversation]
@@ -627,7 +646,7 @@ func (p *CodexWSPool) release(c *codexWSConn, baseline *codexWSBaseline, healthy
 	// stopLeaseLocked reports false when the request was cancelled and the
 	// watcher is closing the socket: it must never go back to the pool.
 	watched := c.stopLeaseLocked()
-	closeIt := !healthy || !watched || c.retired || c.closed || c.cancelled
+	closeIt := !healthy || !watched || c.retired || c.closed || c.cancelled || !p.settings.Enabled
 	c.busy = false
 	c.baseline = baseline
 	c.lastUsed = p.now()

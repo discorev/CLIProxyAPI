@@ -195,7 +195,7 @@ func codexWSTestLease(t *testing.T, pool *CodexWSPool, server *httptest.Server, 
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
 	}
-	return pool.adopt(group, ws, "compat", "fp", nil), true
+	return pool.adopt(lease, group, ws, "compat", "fp", nil), true
 }
 
 func TestCodexWSPoolPerConversationCapFallsBackToHTTP(t *testing.T) {
@@ -720,5 +720,106 @@ func TestCodexWSPoolReleaseEnforcesLoweredCaps(t *testing.T) {
 	pool.Configure(settings)
 	if !codexWSTestClosed(pool, b1) || codexWSTestClosed(pool, a2) {
 		t.Fatalf("b1 closed=%t a2 closed=%t, want the least recently used socket closed", codexWSTestClosed(pool, b1), codexWSTestClosed(pool, a2))
+	}
+}
+
+// codexWSTestReserve reserves a dial slot for (auth, conversation) without
+// completing the dial, as a request does before its handshake finishes.
+func codexWSTestReserve(t *testing.T, pool *CodexWSPool, authID, conversation string) codexWSLease {
+	t.Helper()
+	lease, ok := pool.acquire(codexWSAcquireRequest{group: codexWSGroupKey{authID: authID, conversation: conversation}, compat: "compat", authFP: "fp", shape: newCodexWSRequestShape([]byte(codexWSTestBaseBody))})
+	if !ok || lease.conn != nil {
+		t.Fatalf("acquire() = (%+v, %t), want a reserved dial slot", lease, ok)
+	}
+	return lease
+}
+
+// codexWSTestAdopt completes a reserved dial.
+func codexWSTestAdopt(t *testing.T, pool *CodexWSPool, server *httptest.Server, lease codexWSLease, authID, conversation string) *codexWSConn {
+	t.Helper()
+	ws, resp, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dial test server: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	return pool.adopt(lease, codexWSGroupKey{authID: authID, conversation: conversation}, ws, "compat", "fp", nil)
+}
+
+func TestCodexWSPoolDialInFlightDuringInvalidationNeverJoinsPool(t *testing.T) {
+	disabled := DefaultCodexWSPoolSettings()
+	disabled.Enabled = false
+	tests := []struct {
+		name       string
+		invalidate func(*CodexWSPool)
+	}{
+		{name: "pool disabled", invalidate: func(pool *CodexWSPool) { pool.Configure(disabled) }},
+		{name: "pool disabled and re-enabled", invalidate: func(pool *CodexWSPool) {
+			pool.Configure(disabled)
+			pool.Configure(DefaultCodexWSPoolSettings())
+		}},
+		{name: "credential removed", invalidate: func(pool *CodexWSPool) { pool.CloseAuth("auth-a", "auth_removed") }},
+		{name: "pool closed", invalidate: func(pool *CodexWSPool) { pool.CloseAll("shutdown") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := codexWSTestServer(t)
+			pool := NewCodexWSPool(DefaultCodexWSPoolSettings(), nil)
+			t.Cleanup(func() { pool.CloseAll("test") })
+
+			lease := codexWSTestReserve(t, pool, "auth-a", "conv")
+			tt.invalidate(pool)
+			conn := codexWSTestAdopt(t, pool, server, lease, "auth-a", "conv")
+			select {
+			case <-conn.closing:
+				t.Fatal("the dial must still serve the request that made it")
+			default:
+			}
+			pool.release(conn, nil, true, "completed")
+			select {
+			case <-conn.closing:
+			default:
+				t.Fatal("a socket dialed across an invalidation must close on release, not join the pool")
+			}
+			if open := pool.Stats().OpenSockets; open != 0 {
+				t.Fatalf("open sockets = %d, want 0", open)
+			}
+		})
+	}
+
+	t.Run("other credentials are unaffected", func(t *testing.T) {
+		server := codexWSTestServer(t)
+		pool := NewCodexWSPool(DefaultCodexWSPoolSettings(), nil)
+		t.Cleanup(func() { pool.CloseAll("test") })
+
+		lease := codexWSTestReserve(t, pool, "auth-b", "conv")
+		pool.CloseAuth("auth-a", "auth_removed")
+		conn := codexWSTestAdopt(t, pool, server, lease, "auth-b", "conv")
+		pool.release(conn, nil, true, "completed")
+		if codexWSTestClosed(pool, conn) {
+			t.Fatal("removing one credential must not retire another credential's dial")
+		}
+	})
+}
+
+func TestCodexWSPoolReleaseWhileDisabledCloses(t *testing.T) {
+	server := codexWSTestServer(t)
+	pool := NewCodexWSPool(DefaultCodexWSPoolSettings(), nil)
+	t.Cleanup(func() { pool.CloseAll("test") })
+
+	conn, _ := codexWSTestLease(t, pool, server, "auth-a", "conv")
+	disabled := DefaultCodexWSPoolSettings()
+	disabled.Enabled = false
+	pool.mu.Lock()
+	// A socket that escaped retirement (for example adopted while disabled)
+	// must still close when released into a disabled pool.
+	pool.settings = disabled
+	pool.mu.Unlock()
+	pool.release(conn, nil, true, "completed")
+	select {
+	case <-conn.closing:
+	default:
+		t.Fatal("a socket released while the pool is disabled must close")
 	}
 }

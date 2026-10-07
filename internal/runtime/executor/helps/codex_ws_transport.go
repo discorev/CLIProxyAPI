@@ -171,7 +171,7 @@ func (t *codexWSRoundTripper) roundTripWebsocket(req *http.Request) (*http.Respo
 				}
 			}
 			ws.EnableWriteCompression(false)
-			conn = pool.adopt(group, ws, compat, authFP, handshakeHeader)
+			conn = pool.adopt(lease, group, ws, compat, authFP, handshakeHeader)
 			fresh = true
 			RecordAPIWebsocketHandshake(ctx, cfg.Config, http.StatusSwitchingProtocols, handshakeHeader)
 		}
