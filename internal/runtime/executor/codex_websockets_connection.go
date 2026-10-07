@@ -246,8 +246,14 @@ func newProxyAwareWebsocketDialer(ctx context.Context, cfg *config.Config, auth 
 			return dialer
 		}
 		dialer.Proxy = nil
-		dialer.NetDialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
-			return socksDialer.Dial(network, addr)
+		// Negotiate with the request context so cancellation interrupts a proxy
+		// that accepts the connection but stalls the SOCKS handshake.
+		if contextDialer, ok := socksDialer.(proxy.ContextDialer); ok {
+			dialer.NetDialContext = contextDialer.DialContext
+		} else {
+			dialer.NetDialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
+				return socksDialer.Dial(network, addr)
+			}
 		}
 	case "http", "https":
 		dialer.Proxy = http.ProxyURL(setting.URL)
