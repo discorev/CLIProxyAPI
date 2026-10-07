@@ -105,12 +105,12 @@ func newCodexWSRequestShape(body []byte) codexWSRequestShape {
 	return shape
 }
 
-// codexWSItemDigest hashes one conversation item after removing the fields a
-// client legitimately drops or rewrites when it echoes a server output item back
-// as input: the item's own id and status, null values and empty arrays (for
-// example annotations: [] and logprobs: [] on output_text parts). Anything that
-// carries content - text, arguments, call ids, encrypted reasoning - must match
-// exactly, so a client that alters history gets a full request.
+// codexWSItemDigest hashes one conversation item after removing only the
+// serialization metadata a client legitimately drops when it echoes a server
+// output item back as input (see normalizeCodexWSItem). Everything else - text,
+// arguments, call ids, encrypted reasoning, tool schemas, explicit nulls and
+// empty arrays anywhere else - must match structurally, so a client that alters
+// history gets a full request.
 func codexWSItemDigest(raw []byte) (codexWSDigest, error) {
 	canonical, err := canonicalCodexWSJSON(raw, true)
 	if err != nil {
@@ -120,8 +120,7 @@ func codexWSItemDigest(raw []byte) (codexWSDigest, error) {
 }
 
 // canonicalCodexWSJSON re-encodes raw JSON with sorted object keys and literal
-// numbers. When item is true the top-level id/status fields are removed and
-// null values and empty arrays are pruned recursively.
+// numbers. When item is true the known item metadata is normalized first.
 func canonicalCodexWSJSON(raw []byte, item bool) ([]byte, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
@@ -130,37 +129,65 @@ func canonicalCodexWSJSON(raw []byte, item bool) ([]byte, error) {
 		return nil, err
 	}
 	if item {
-		if object, ok := value.(map[string]any); ok {
-			delete(object, "id")
-			delete(object, "status")
-		}
-		value = pruneCodexWSJSON(value)
+		normalizeCodexWSItem(value)
 	}
 	return json.Marshal(value)
 }
 
-func pruneCodexWSJSON(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, child := range typed {
-			if child == nil {
-				delete(typed, key)
-				continue
-			}
-			if array, ok := child.([]any); ok && len(array) == 0 {
-				delete(typed, key)
-				continue
-			}
-			typed[key] = pruneCodexWSJSON(child)
+// normalizeCodexWSItem removes, at their known locations only, the fields
+// that differ between a server output item and the same item echoed back by a
+// client:
+//   - the item's own id and status, which clients omit or rewrite and which do
+//     not change what the model sees;
+//   - empty annotations and logprobs arrays on output_text parts of a message,
+//     which the server emits and clients drop;
+//   - a null or empty content on a reasoning item, which some translators add
+//     to the encrypted reasoning they replay ("content": null) and the server
+//     omits.
+//
+// Nothing nested deeper is touched: an explicit null or empty array inside
+// arguments, tool schemas or any other payload is content.
+func normalizeCodexWSItem(value any) {
+	item, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	delete(item, "id")
+	delete(item, "status")
+	switch itemType, _ := item["type"].(string); itemType {
+	case "reasoning":
+		if codexWSEmptyJSON(item["content"]) {
+			delete(item, "content")
 		}
-		return typed
-	case []any:
-		for i := range typed {
-			typed[i] = pruneCodexWSJSON(typed[i])
+	case "message":
+		normalizeCodexWSMessageContent(item)
+	}
+}
+
+// codexWSEmptyJSON reports a present-but-empty value: null or [].
+func codexWSEmptyJSON(value any) bool {
+	if value == nil {
+		return true
+	}
+	array, isArray := value.([]any)
+	return isArray && len(array) == 0
+}
+
+func normalizeCodexWSMessageContent(item map[string]any) {
+	content, _ := item["content"].([]any)
+	for _, rawPart := range content {
+		part, isObject := rawPart.(map[string]any)
+		if !isObject {
+			continue
 		}
-		return typed
-	default:
-		return value
+		if partType, _ := part["type"].(string); partType != "output_text" {
+			continue
+		}
+		for _, key := range []string{"annotations", "logprobs"} {
+			if array, isArray := part[key].([]any); isArray && len(array) == 0 {
+				delete(part, key)
+			}
+		}
 	}
 }
 

@@ -290,3 +290,128 @@ func codexWSTestClosed(pool *CodexWSPool, c *codexWSConn) bool {
 	defer pool.mu.Unlock()
 	return c.closed
 }
+
+func TestCodexWSItemDigestNormalizesOnlyKnownMetadata(t *testing.T) {
+	digest := func(raw string) codexWSDigest {
+		t.Helper()
+		d, err := codexWSItemDigest([]byte(raw))
+		if err != nil {
+			t.Fatalf("codexWSItemDigest(%s) error = %v", raw, err)
+		}
+		return d
+	}
+	equal := []struct {
+		name string
+		a, b string
+	}{
+		{
+			name: "item id and status",
+			a:    `{"id":"fc_1","type":"function_call","status":"completed","call_id":"c1","name":"shell","arguments":"{}"}`,
+			b:    `{"type":"function_call","call_id":"c1","name":"shell","arguments":"{}"}`,
+		},
+		{
+			name: "empty annotations and logprobs on output_text",
+			a:    `{"type":"message","role":"assistant","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"hi"}]}`,
+			b:    `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}`,
+		},
+		{
+			name: "null content on reasoning",
+			a:    `{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"enc"}`,
+			b:    `{"type":"reasoning","summary":[],"content":null,"encrypted_content":"enc"}`,
+		},
+		{
+			name: "key order",
+			a:    `{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]}`,
+			b:    `{"content":[{"text":"q","type":"input_text"}],"role":"user","type":"message"}`,
+		},
+	}
+	for _, tt := range equal {
+		t.Run("equal/"+tt.name, func(t *testing.T) {
+			if digest(tt.a) != digest(tt.b) {
+				t.Fatalf("digests differ:\n%s\n%s", tt.a, tt.b)
+			}
+		})
+	}
+
+	different := []struct {
+		name string
+		a, b string
+	}{
+		{
+			name: "null removed inside a tool schema",
+			a:    `{"type":"tool_search_output","call_id":"ts1","execution":"client","tools":[{"type":"function","name":"pick","parameters":{"type":"object","properties":{"mode":{"const":null}}}}]}`,
+			b:    `{"type":"tool_search_output","call_id":"ts1","execution":"client","tools":[{"type":"function","name":"pick","parameters":{"type":"object","properties":{"mode":{}}}}]}`,
+		},
+		{
+			name: "empty array removed inside a tool schema",
+			a:    `{"type":"tool_search_output","call_id":"ts1","tools":[{"type":"function","name":"pick","parameters":{"type":"object","required":[],"properties":{}}}]}`,
+			b:    `{"type":"tool_search_output","call_id":"ts1","tools":[{"type":"function","name":"pick","parameters":{"type":"object","properties":{}}}]}`,
+		},
+		{
+			name: "empty tools list removed from tool_search_output",
+			a:    `{"type":"tool_search_output","call_id":"ts1","tools":[]}`,
+			b:    `{"type":"tool_search_output","call_id":"ts1"}`,
+		},
+		{
+			name: "null output on a function call output",
+			a:    `{"type":"function_call_output","call_id":"c1","output":null}`,
+			b:    `{"type":"function_call_output","call_id":"c1"}`,
+		},
+		{
+			name: "non-empty annotations",
+			a:    `{"type":"message","role":"assistant","content":[{"type":"output_text","annotations":[{"type":"url_citation","url":"https://example.com"}],"text":"hi"}]}`,
+			b:    `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}`,
+		},
+		{
+			name: "empty annotations outside output_text",
+			a:    `{"type":"message","role":"user","content":[{"type":"input_text","annotations":[],"text":"hi"}]}`,
+			b:    `{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}`,
+		},
+		{
+			name: "nested id is content",
+			a:    `{"type":"custom_tool_call_output","call_id":"c1","output":{"id":"x","status":"done"}}`,
+			b:    `{"type":"custom_tool_call_output","call_id":"c1","output":{}}`,
+		},
+		{
+			name: "reasoning summary dropped",
+			a:    `{"type":"reasoning","summary":[],"encrypted_content":"enc"}`,
+			b:    `{"type":"reasoning","encrypted_content":"enc"}`,
+		},
+	}
+	for _, tt := range different {
+		t.Run("different/"+tt.name, func(t *testing.T) {
+			if digest(tt.a) == digest(tt.b) {
+				t.Fatalf("digests are equal, a real change would be dropped from the delta:\n%s\n%s", tt.a, tt.b)
+			}
+		})
+	}
+}
+
+// TestCodexWSIncrementalItemsKeepsNestedHistoryChanges guards the delta
+// against hiding an edit deep inside a history item: the upstream would keep
+// the old version.
+func TestCodexWSIncrementalItemsKeepsNestedHistoryChanges(t *testing.T) {
+	toolSearch := `{"type":"tool_search_output","call_id":"ts1","execution":"client","status":"completed","tools":[{"type":"function","name":"pick","parameters":{"type":"object","properties":{"mode":{"const":null}}}}]}`
+	withHistory := func(items ...string) []byte {
+		return []byte(strings.Replace(codexWSTestBaseBody, `"text":"q1"}]}]`, `"text":"q1"}]},`+strings.Join(items, ",")+`]`, 1))
+	}
+	baseline := newCodexWSBaseline(newCodexWSRequestShape(withHistory(toolSearch)), codexWSTestOutput, "resp_1")
+	if baseline == nil {
+		t.Fatal("baseline is nil")
+	}
+	echo := []string{
+		`{"type":"reasoning","summary":[],"encrypted_content":"enc-1"}`,
+		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}`,
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"q2"}]}`,
+	}
+
+	unchanged := withHistory(append([]string{strings.Replace(toolSearch, `"status":"completed",`, ``, 1)}, echo...)...)
+	if items, ok := codexWSIncrementalItems(newCodexWSRequestShape(unchanged), baseline); !ok || len(items) != 1 {
+		t.Fatalf("unchanged history = (%d items, %t), want an incremental request with the new message", len(items), ok)
+	}
+
+	changed := withHistory(append([]string{strings.Replace(toolSearch, `"mode":{"const":null}`, `"mode":{}`, 1)}, echo...)...)
+	if _, ok := codexWSIncrementalItems(newCodexWSRequestShape(changed), baseline); ok {
+		t.Fatal("removing const:null from a tool schema in history must send the full request")
+	}
+}
