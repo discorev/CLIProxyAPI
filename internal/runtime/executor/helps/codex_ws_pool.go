@@ -150,7 +150,9 @@ func DefaultCodexWSPool() *CodexWSPool {
 }
 
 // Configure applies new settings. Disabling the pool closes every idle socket
-// and retires in-flight ones; tighter caps are enforced as sockets go idle.
+// and retires in-flight ones. Lowered caps close the least recently used idle
+// sockets at once; in-flight sockets still over a cap close as their responses
+// finish (see release).
 func (p *CodexWSPool) Configure(settings CodexWSPoolSettings) {
 	if p == nil {
 		return
@@ -163,6 +165,7 @@ func (p *CodexWSPool) Configure(settings CodexWSPoolSettings) {
 		toClose = p.retireLocked(func(*codexWSConn) bool { return true })
 	} else {
 		toClose = p.evictLocked(p.now())
+		toClose = append(toClose, p.enforceCapsLocked()...)
 	}
 	p.mu.Unlock()
 	closeCodexWSConns(toClose, "pool_reconfigured")
@@ -255,6 +258,46 @@ func (p *CodexWSPool) retireConnLocked(c *codexWSConn, toClose *[]*codexWSConn) 
 	}
 	p.removeLocked(c)
 	*toClose = append(*toClose, c)
+}
+
+// enforceCapsLocked closes least recently used idle sockets until every
+// conversation, every credential and the pool as a whole are within their
+// caps. Busy sockets are never interrupted; they still count, so a scope that
+// is over its cap with only busy sockets left shrinks as they are released.
+func (p *CodexWSPool) enforceCapsLocked() []*codexWSConn {
+	var toClose []*codexWSConn
+	evictWhile := func(over func() bool, match func(*codexWSConn) bool) {
+		for over() {
+			victim := p.evictLRULocked(match)
+			if victim == nil {
+				return
+			}
+			toClose = append(toClose, victim)
+		}
+	}
+	groups := make([]codexWSGroupKey, 0, len(p.groups))
+	auths := make(map[string]struct{})
+	for key := range p.groups {
+		groups = append(groups, key)
+		auths[key.authID] = struct{}{}
+	}
+	for _, key := range groups {
+		evictWhile(
+			func() bool { return len(p.groups[key])+p.pending[key] > p.settings.MaxSocketsPerConversation },
+			func(c *codexWSConn) bool { return c.group == key },
+		)
+	}
+	for authID := range auths {
+		evictWhile(
+			func() bool { return p.authSocketCountLocked(authID) > p.settings.MaxSocketsPerAuth },
+			func(c *codexWSConn) bool { return c.group.authID == authID },
+		)
+	}
+	evictWhile(
+		func() bool { return len(p.conns)+p.pendingTotal > p.settings.MaxSockets },
+		func(*codexWSConn) bool { return true },
+	)
+	return toClose
 }
 
 func (p *CodexWSPool) evictLocked(now time.Time) []*codexWSConn {
@@ -574,7 +617,8 @@ func (p *CodexWSPool) cancelLease(c *codexWSConn) {
 
 // release returns a leased socket. A healthy socket goes back to the pool with
 // the baseline of its completed response (nil when the next request must be
-// full); an unhealthy, retired or cancelled socket is closed.
+// full) unless that puts a scope over its cap; an unhealthy, retired or
+// cancelled socket is closed.
 func (p *CodexWSPool) release(c *codexWSConn, baseline *codexWSBaseline, healthy bool, reason string) {
 	if p == nil || c == nil {
 		return
@@ -587,13 +631,17 @@ func (p *CodexWSPool) release(c *codexWSConn, baseline *codexWSBaseline, healthy
 	c.busy = false
 	c.baseline = baseline
 	c.lastUsed = p.now()
+	var overCap []*codexWSConn
 	if closeIt {
 		p.removeLocked(c)
+	} else {
+		overCap = p.enforceCapsLocked()
 	}
 	p.mu.Unlock()
 	if closeIt {
 		c.close(reason)
 	}
+	closeCodexWSConns(overCap, "over_cap")
 }
 
 // readerExited drops a socket whose upstream connection ended.

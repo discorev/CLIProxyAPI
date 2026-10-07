@@ -3,6 +3,7 @@ package helps
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -595,5 +596,99 @@ func TestCodexWSPoolCloseAuthClosesCancelledBusySocket(t *testing.T) {
 	case <-liveConn.closing:
 	default:
 		t.Fatal("the retired socket should close on release")
+	}
+}
+
+func TestCodexWSPoolLoweredCapsApplyToExistingSockets(t *testing.T) {
+	server := codexWSTestServer(t)
+	clock := &codexWSTestClock{now: time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)}
+	pool := NewCodexWSPool(DefaultCodexWSPoolSettings(), clock.Now)
+	t.Cleanup(func() { pool.CloseAll("test") })
+
+	// auth-a: three idle sockets (oldest first) and one busy socket.
+	var idle []*codexWSConn
+	for i := 0; i < 3; i++ {
+		conn, _ := codexWSTestLease(t, pool, server, "auth-a", fmt.Sprintf("conv-%d", i))
+		idle = append(idle, conn)
+		clock.Advance(time.Second)
+	}
+	for _, conn := range idle {
+		pool.release(conn, nil, true, "done")
+		clock.Advance(time.Second)
+	}
+	busy, _ := codexWSTestLease(t, pool, server, "auth-a", "conv-busy")
+
+	settings := DefaultCodexWSPoolSettings()
+	settings.MaxSocketsPerAuth = 2
+	pool.Configure(settings)
+	// Two of the three idle sockets go (least recently used first); the busy
+	// socket counts towards the cap but is not interrupted.
+	if !codexWSTestClosed(pool, idle[0]) || !codexWSTestClosed(pool, idle[1]) || codexWSTestClosed(pool, idle[2]) {
+		t.Fatalf("closed = %t,%t,%t, want the two least recently used idle sockets closed",
+			codexWSTestClosed(pool, idle[0]), codexWSTestClosed(pool, idle[1]), codexWSTestClosed(pool, idle[2]))
+	}
+	if codexWSTestClosed(pool, busy) {
+		t.Fatal("a lowered cap must not interrupt an in-flight response")
+	}
+
+	settings.MaxSocketsPerAuth = 1
+	pool.Configure(settings)
+	if !codexWSTestClosed(pool, idle[2]) {
+		t.Fatal("the remaining idle socket should close under the new cap")
+	}
+	if open := pool.Stats().OpenSockets; open != 1 {
+		t.Fatalf("open sockets = %d, want only the busy one", open)
+	}
+
+	// The busy socket is still within the cap of 1 and goes back to the pool.
+	pool.release(busy, nil, true, "done")
+	if codexWSTestClosed(pool, busy) {
+		t.Fatal("a socket within the cap should be kept")
+	}
+}
+
+func TestCodexWSPoolReleaseEnforcesLoweredCaps(t *testing.T) {
+	server := codexWSTestServer(t)
+	clock := &codexWSTestClock{now: time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)}
+	pool := NewCodexWSPool(DefaultCodexWSPoolSettings(), clock.Now)
+	t.Cleanup(func() { pool.CloseAll("test") })
+
+	// Three busy sockets on two credentials, two in one conversation.
+	a1, _ := codexWSTestLease(t, pool, server, "auth-a", "conv")
+	a2, _ := codexWSTestLease(t, pool, server, "auth-a", "conv")
+	b1, _ := codexWSTestLease(t, pool, server, "auth-b", "conv-b")
+
+	settings := DefaultCodexWSPoolSettings()
+	settings.MaxSocketsPerConversation = 1
+	settings.MaxSockets = 2
+	pool.Configure(settings)
+	if open := pool.Stats().OpenSockets; open != 3 {
+		t.Fatalf("open sockets = %d, want busy sockets left alone by Configure", open)
+	}
+
+	// auth-a/conv is over its per-conversation cap (2 > 1) and the pool is
+	// over the global cap (3 > 2): the first release closes.
+	clock.Advance(time.Second)
+	pool.release(a1, nil, true, "done")
+	if !codexWSTestClosed(pool, a1) {
+		t.Fatal("a socket released while its conversation is over the cap should close")
+	}
+	// Now auth-a/conv has one busy socket and the pool holds 2: within caps.
+	clock.Advance(time.Second)
+	pool.release(b1, nil, true, "done")
+	if codexWSTestClosed(pool, b1) {
+		t.Fatal("a socket released within every cap should be kept")
+	}
+	clock.Advance(time.Second)
+	pool.release(a2, nil, true, "done")
+	if codexWSTestClosed(pool, a2) || pool.Stats().OpenSockets != 2 {
+		t.Fatalf("a2 closed=%t open=%d, want both remaining sockets kept at the global cap", codexWSTestClosed(pool, a2), pool.Stats().OpenSockets)
+	}
+
+	// Lowering the global cap again closes the least recently used idle one.
+	settings.MaxSockets = 1
+	pool.Configure(settings)
+	if !codexWSTestClosed(pool, b1) || codexWSTestClosed(pool, a2) {
+		t.Fatalf("b1 closed=%t a2 closed=%t, want the least recently used socket closed", codexWSTestClosed(pool, b1), codexWSTestClosed(pool, a2))
 	}
 }
