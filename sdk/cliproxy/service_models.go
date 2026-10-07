@@ -37,10 +37,6 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
 	}
-	seq := s.beginModelRegistration(a)
-	if seq == 0 {
-		return
-	}
 	authKind := a.AuthKind()
 	// Unregister legacy client ID (if present) to avoid double counting
 	if a.Runtime != nil {
@@ -63,7 +59,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			excluded = strings.Split(val, ",")
 		}
 	}
-	if s.tryRegisterPluginModelsForAuth(ctx, a, provider, authKind, excluded, seq) {
+	if s.tryRegisterPluginModelsForAuth(ctx, a, provider, authKind, excluded) {
 		return
 	}
 	if ctx.Err() != nil {
@@ -292,35 +288,21 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	if ctx.Err() != nil {
 		return
 	}
-	// The fetch must wait until this registration commits. Plugin discovery runs
-	// first, so no plugin call holds the access-cache lock.
-	s.restrictedAccess.mu.RLock()
-	defer s.restrictedAccess.mu.RUnlock()
-	models = s.filterRestrictedModelsLocked(a, models)
+	models = s.filterRestrictedModels(a, models)
 	models = applyOAuthModelAliasForAuth(s.cfg, provider, authKind, a.Attributes, models)
 	if ctx.Err() != nil {
 		return
 	}
-	models = appendUniqueModels(models, s.filterRestrictedModelsLocked(a, pluginModels))
+	models = appendUniqueModels(models, s.filterRestrictedModels(a, pluginModels))
 	if len(models) > 0 {
 		models = applyOAuthSettingsForAuth(s.cfg, provider, authKind, models)
-		if s.restrictedAccess.beforeCommit != nil {
-			s.restrictedAccess.beforeCommit()
-		}
-		s.commitModelRegistration(a, seq, func() {
-			s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
-			s.markRestrictedModelRegistrationAppliedLocked(a)
-		})
+		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		if strings.EqualFold(strings.TrimSpace(a.Provider), "antigravity") {
 			s.asyncProbeAntigravityCapabilities(ctx, a, key)
 		}
 		return
 	}
-
-	s.commitModelRegistration(a, seq, func() {
-		GlobalModelRegistry().UnregisterClient(a.ID)
-		s.markRestrictedModelRegistrationAppliedLocked(a)
-	})
+	GlobalModelRegistry().UnregisterClient(a.ID)
 }
 
 // refreshModelRegistrationForAuth re-applies the latest model registration for

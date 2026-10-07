@@ -529,7 +529,6 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 		provider = strings.TrimSpace(existing.Provider)
 	}
 	s.dropRestrictedModelAccess(id)
-	s.dropModelRegistrationSequence(id)
 	GlobalModelRegistry().UnregisterClient(id)
 	s.coreManager.Remove(ctx, id)
 	if strings.EqualFold(provider, "codex") {

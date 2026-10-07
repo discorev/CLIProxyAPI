@@ -507,7 +507,7 @@ func appendUniqueModels(models, pluginModels []*ModelInfo) []*ModelInfo {
 	return out
 }
 
-func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreauth.Auth, provider, authKind string, excluded []string, seq uint64) bool {
+func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreauth.Auth, provider, authKind string, excluded []string) bool {
 	if s == nil || s.pluginHost == nil || a == nil {
 		return false
 	}
@@ -522,13 +522,6 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 		return false
 	}
 	if result.Err != nil {
-		// Discovery failure cannot preserve a registration that still exposes
-		// models revoked by the latest upstream list.
-		s.restrictedAccess.mu.RLock()
-		if s.hasDeniedRegisteredRestrictedModelsLocked(a) {
-			s.commitModelRegistration(a, seq, func() { GlobalModelRegistry().UnregisterClient(a.ID) })
-		}
-		s.restrictedAccess.mu.RUnlock()
 		return true
 	}
 	activeAuth := a
@@ -579,23 +572,13 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 		return true
 	}
 	models := applyExcludedModels(result.Models, activeExcluded)
-	// Keep the access snapshot stable through the registry commit. The plugin
-	// RPC above runs without the cache lock.
-	s.restrictedAccess.mu.RLock()
-	defer s.restrictedAccess.mu.RUnlock()
-	models = s.filterRestrictedModelsLocked(activeAuth, models)
+	models = s.filterRestrictedModels(activeAuth, models)
 	models = applyOAuthModelAliasForAuth(s.cfg, providerKey, activeAuthKind, activeAuth.Attributes, models)
 	if len(models) > 0 {
 		models = applyOAuthSettingsForAuth(s.cfg, providerKey, activeAuthKind, models)
-		s.commitModelRegistration(activeAuth, seq, func() {
-			s.registerResolvedModelsForAuth(activeAuth, providerKey, applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
-			s.markRestrictedModelRegistrationAppliedLocked(activeAuth)
-		})
+		s.registerResolvedModelsForAuth(activeAuth, providerKey, applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		return true
 	}
-	s.commitModelRegistration(activeAuth, seq, func() {
-		GlobalModelRegistry().UnregisterClient(activeAuth.ID)
-		s.markRestrictedModelRegistrationAppliedLocked(activeAuth)
-	})
+	GlobalModelRegistry().UnregisterClient(activeAuth.ID)
 	return true
 }

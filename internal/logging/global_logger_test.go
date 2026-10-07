@@ -400,8 +400,6 @@ func TestLogFormatterPrintsUsageLifecycleFields(t *testing.T) {
 			`usage cache cleared provider=codex auth_id="a" reason="removed"`},
 		{"usage cache cleared", log.Fields{"provider": "codex", "auth_id": "a", "reason": "provider_changed"},
 			`usage cache cleared provider=codex auth_id="a" reason="provider_changed"`},
-		{"restricted model access changed", log.Fields{"auth_id": "a", "model_ids": "claude-mythos-5-1"},
-			`restricted model access changed auth_id="a" model_ids=claude-mythos-5-1`},
 		{"usage sweep started", log.Fields{}, `usage sweep started`},
 		{"reset auto-apply limited to listed providers: other providers are dry-run", log.Fields{"providers": "codex"},
 			`reset auto-apply limited to listed providers: other providers are dry-run providers=codex`},

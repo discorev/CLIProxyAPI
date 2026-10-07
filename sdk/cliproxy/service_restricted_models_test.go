@@ -42,11 +42,23 @@ func modelIDs(models []*ModelInfo) []string {
 	return ids
 }
 
+func containsModelID(models []*ModelInfo, id string) bool {
+	for _, model := range models {
+		if model.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRestrictedModelFilterFailsClosedExceptConfiguredModels(t *testing.T) {
 	for _, provider := range []string{"claude", "codex", "gemini"} {
 		t.Run(provider, func(t *testing.T) {
 			auth := restrictedTestAuth(provider, provider+"-restricted-test")
 			service := &Service{}
+			service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+				return map[string]struct{}{"restricted": {}, "configured": {}}
+			}
 			models := []*ModelInfo{
 				{ID: "ordinary"},
 				{ID: "restricted", RestrictedAccess: true},
@@ -60,7 +72,7 @@ func TestRestrictedModelFilterFailsClosedExceptConfiguredModels(t *testing.T) {
 				t.Fatalf("unknown access models = %v, want %v", got, wantUnknown)
 			}
 			service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{
-				auth.ID: {identity: restrictedModelIdentity(auth), listed: map[string]struct{}{"restricted": {}}, fetched: true},
+				auth.ID: {identity: restrictedModelIdentity(auth), listed: map[string]struct{}{"restricted": {}}},
 			}
 			wantGranted := []string{"ordinary", "restricted"}
 			if provider == "gemini" {
@@ -196,13 +208,13 @@ func TestRestrictedModelFetchRetainsLastListAndOnlyReregistersOnGrantChanges(t *
 	service.restrictedAccess.now = func() time.Time { return now }
 	entry.nextAt = now.Add(restrictedModelRefreshInterval)
 	fetch(nil, errors.New("upstream unavailable"))
-	if !entry.nextAt.Equal(now.Add(restrictedModelRetryInterval)) {
-		t.Fatalf("failed fetch next attempt = %v, want %v", entry.nextAt, now.Add(restrictedModelRetryInterval))
+	if !entry.nextAt.Equal(now.Add(restrictedModelRefreshInterval)) {
+		t.Fatalf("failed fetch next attempt = %v, want %v", entry.nextAt, now.Add(restrictedModelRefreshInterval))
 	}
 	if got := reg.ClientRegistrationEpoch(id); got != grantedEpoch {
 		t.Fatalf("failed fetch re-registered: epoch %d != %d", got, grantedEpoch)
 	}
-	if !entry.fetched || !maps.Equal(entry.listed, map[string]struct{}{"other": {}, "restricted": {}}) {
+	if !maps.Equal(entry.listed, map[string]struct{}{"other": {}, "restricted": {}}) {
 		t.Fatalf("failed fetch discarded last successful list: %+v", entry)
 	}
 	fetch([]string{}, nil)
@@ -228,200 +240,6 @@ func TestRestrictedModelFetchRetainsLastListAndOnlyReregistersOnGrantChanges(t *
 	}
 }
 
-func TestRestrictedRevocationFailsClosedAcrossPluginDiscoveryErrors(t *testing.T) {
-	const id = "restricted-plugin-discovery-revocation-test"
-	const restricted = "restricted-plugin-discovery-model"
-	auth := restrictedTestAuth("codex", id)
-	auth.Prefix = "tenant"
-	manager := coreauth.NewManager(nil, nil, nil)
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatal(err)
-	}
-	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
-	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
-		return map[string]struct{}{restricted: {}}
-	}
-	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth), listed: map[string]struct{}{restricted: {}}, fetched: true}
-	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{id: entry}
-	reg := GlobalModelRegistry()
-	t.Cleanup(func() { reg.UnregisterClient(id) })
-	var failing bool
-	var failedCalls int
-	original := pluginHostModelsForAuth
-	pluginHostModelsForAuth = func(_ *pluginhost.Host, _ context.Context, _ *coreauth.Auth) pluginhost.AuthModelResult {
-		if failing {
-			failedCalls++
-			return pluginhost.AuthModelResult{Handled: true, Err: errors.New("plugin discovery unavailable")}
-		}
-		return pluginhost.AuthModelResult{Handled: true, Models: []*ModelInfo{{ID: restricted}, {ID: "ordinary-plugin-model"}}}
-	}
-	t.Cleanup(func() { pluginHostModelsForAuth = original })
-	service.registerModelsForAuth(context.Background(), auth)
-	if !containsModelID(reg.GetModelsForClient(id), "tenant/"+restricted) {
-		t.Fatal("fixture did not register the prefixed restricted model")
-	}
-
-	fetchDenied := func() {
-		t.Helper()
-		service.fetchRestrictedModels(context.Background(), auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
-			return []string{"ordinary-plugin-model"}, nil
-		}), entry)
-	}
-	failing = true
-	fetchDenied()
-	if failedCalls != 2 {
-		t.Fatalf("plugin discovery failed %d times, want both refresh passes", failedCalls)
-	}
-	if models := reg.GetModelsForClient(id); len(models) != 0 {
-		t.Fatalf("plugin failure preserved a revoked registration: %v", modelIDs(models))
-	}
-	if !service.pendingModelRegistration(id) {
-		t.Fatal("failed refresh was incorrectly marked reconciled")
-	}
-	failing = false
-	fetchDenied() // Identical denial must retry the failed reconciliation.
-	if containsModelID(reg.GetModelsForClient(id), restricted) || containsModelID(reg.GetModelsForClient(id), "tenant/"+restricted) {
-		t.Fatal("plugin recovery restored the revoked restricted model")
-	}
-	if !containsModelID(reg.GetModelsForClient(id), "ordinary-plugin-model") || service.pendingModelRegistration(id) {
-		t.Fatal("plugin recovery failed to restore ordinary models and clear pending reconciliation")
-	}
-	epoch := reg.ClientRegistrationEpoch(id)
-	fetchDenied()
-	if got := reg.ClientRegistrationEpoch(id); got != epoch {
-		t.Fatalf("reconciled denial re-registered: %d != %d", got, epoch)
-	}
-}
-
-func TestAPIKeyExceptionRemovalFailsClosedDuringPluginDiscoveryError(t *testing.T) {
-	for _, provider := range []string{"claude", "codex"} {
-		t.Run(provider, func(t *testing.T) {
-			const restricted = "configured-restricted-plugin-model"
-			id := provider + "-plugin-exception-removal-test"
-			cfg := &config.Config{}
-			if provider == "claude" {
-				cfg.ClaudeKey = []config.ClaudeKey{{APIKey: "fake-key", Models: []internalconfig.ClaudeModel{{Name: restricted}}}}
-			} else {
-				cfg.CodexKey = []config.CodexKey{{APIKey: "fake-key", Models: []internalconfig.CodexModel{{Name: restricted}}}}
-			}
-			auth := &coreauth.Auth{ID: id, Provider: provider, Status: coreauth.StatusActive,
-				Attributes: map[string]string{"api_key": "fake-key", "source": "config:" + provider, "config_index": "0"}}
-			manager := coreauth.NewManager(nil, nil, nil)
-			if _, err := manager.Register(context.Background(), auth); err != nil {
-				t.Fatal(err)
-			}
-			service := &Service{cfg: cfg, coreManager: manager, pluginHost: pluginhost.New()}
-			service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
-				return map[string]struct{}{restricted: {}}
-			}
-			reg := GlobalModelRegistry()
-			t.Cleanup(func() { reg.UnregisterClient(id) })
-			var failing bool
-			original := pluginHostModelsForAuth
-			pluginHostModelsForAuth = func(_ *pluginhost.Host, _ context.Context, _ *coreauth.Auth) pluginhost.AuthModelResult {
-				if failing {
-					return pluginhost.AuthModelResult{Handled: true, Err: errors.New("plugin discovery unavailable")}
-				}
-				return pluginhost.AuthModelResult{Handled: true, Models: []*ModelInfo{{ID: restricted}, {ID: "ordinary-plugin-model"}}}
-			}
-			t.Cleanup(func() { pluginHostModelsForAuth = original })
-			service.registerModelsForAuth(context.Background(), auth)
-			if !containsModelID(reg.GetModelsForClient(id), restricted) {
-				t.Fatal("fixture did not register the explicit API-key exception")
-			}
-			if provider == "claude" {
-				cfg.ClaudeKey[0].Models = nil
-			} else {
-				cfg.CodexKey[0].Models = nil
-			}
-			failing = true
-			service.refreshModelRegistrationForAuth(auth)
-			if containsModelID(reg.GetModelsForClient(id), restricted) {
-				t.Fatal("plugin discovery failure preserved the removed API-key exception")
-			}
-			if !service.pendingModelRegistration(id) {
-				t.Fatal("failed API-key registration was not left pending")
-			}
-			service.sweepRestrictedModelAccess(context.Background())
-			if !service.pendingModelRegistration(id) {
-				t.Fatal("failed sweep incorrectly marked API-key registration complete")
-			}
-			failing = false
-			service.sweepRestrictedModelAccess(context.Background())
-			models := reg.GetModelsForClient(id)
-			if containsModelID(models, restricted) || !containsModelID(models, "ordinary-plugin-model") || service.pendingModelRegistration(id) {
-				t.Fatalf("API-key recovery did not restore only ordinary models: %v (pending=%t)", modelIDs(models), service.pendingModelRegistration(id))
-			}
-		})
-	}
-}
-
-func TestCatalogRestrictionPluginErrorRetriesUnchangedGrant(t *testing.T) {
-	const id = "restricted-catalog-plugin-recovery-test"
-	const restricted = "newly-restricted-plugin-model"
-	auth := restrictedTestAuth("codex", id)
-	manager := coreauth.NewManager(nil, nil, nil)
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatal(err)
-	}
-	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
-	now := time.Date(2026, time.October, 7, 12, 0, 0, 0, time.UTC)
-	service.restrictedAccess.now = func() time.Time { return now }
-	var catalogRestricted bool
-	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
-		if catalogRestricted {
-			return map[string]struct{}{restricted: {}}
-		}
-		return nil
-	}
-	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth), fetched: true, listed: map[string]struct{}{}, nextAt: now.Add(restrictedModelRefreshInterval)}
-	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{id: entry}
-	reg := GlobalModelRegistry()
-	t.Cleanup(func() { reg.UnregisterClient(id) })
-	var failing bool
-	original := pluginHostModelsForAuth
-	pluginHostModelsForAuth = func(_ *pluginhost.Host, _ context.Context, _ *coreauth.Auth) pluginhost.AuthModelResult {
-		if failing {
-			return pluginhost.AuthModelResult{Handled: true, Err: errors.New("plugin discovery unavailable")}
-		}
-		return pluginhost.AuthModelResult{Handled: true, Models: []*ModelInfo{{ID: restricted}, {ID: "ordinary-plugin-model"}}}
-	}
-	t.Cleanup(func() { pluginHostModelsForAuth = original })
-	service.registerModelsForAuth(context.Background(), auth)
-	if !containsModelID(reg.GetModelsForClient(id), restricted) || !containsModelID(reg.GetModelsForClient(id), "ordinary-plugin-model") {
-		t.Fatal("fixture did not register both plugin models before catalog change")
-	}
-	catalogRestricted = true
-	failing = true
-	service.refreshModelRegistrationForAuth(auth)
-	if models := reg.GetModelsForClient(id); len(models) != 0 || !service.pendingModelRegistration(id) {
-		t.Fatalf("catalog fail-close did not leave registration pending: %v (pending=%t)", modelIDs(models), service.pendingModelRegistration(id))
-	}
-	fetchUnchanged := func() {
-		t.Helper()
-		service.fetchRestrictedModels(context.Background(), auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
-			return nil, nil
-		}), entry)
-	}
-	fetchUnchanged()
-	fetchUnchanged()
-	if models := reg.GetModelsForClient(id); len(models) != 0 || !service.pendingModelRegistration(id) {
-		t.Fatalf("failed identical-list fetches cleared pending: %v (pending=%t)", modelIDs(models), service.pendingModelRegistration(id))
-	}
-	failing = false
-	service.sweepRestrictedModelAccess(context.Background())
-	models := reg.GetModelsForClient(id)
-	if containsModelID(models, restricted) || !containsModelID(models, "ordinary-plugin-model") || service.pendingModelRegistration(id) {
-		t.Fatalf("sweep did not recover ordinary plugin model: %v (pending=%t)", modelIDs(models), service.pendingModelRegistration(id))
-	}
-	epoch := reg.ClientRegistrationEpoch(id)
-	fetchUnchanged()
-	service.sweepRestrictedModelAccess(context.Background())
-	if got := reg.ClientRegistrationEpoch(id); got != epoch {
-		t.Fatalf("reconciled unchanged grant registered again: %d != %d", got, epoch)
-	}
-}
-
 func TestRestrictedModelFetchRepairsRegistryDrift(t *testing.T) {
 	const id = "restricted-registration-drift-test"
 	const restricted = "restricted-drift-model"
@@ -434,7 +252,7 @@ func TestRestrictedModelFetchRepairsRegistryDrift(t *testing.T) {
 	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
 		return map[string]struct{}{restricted: {}}
 	}
-	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth), listed: map[string]struct{}{restricted: {}}, fetched: true}
+	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth), listed: map[string]struct{}{restricted: {}}}
 	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{id: entry}
 	reg := GlobalModelRegistry()
 	t.Cleanup(func() { reg.UnregisterClient(id) })
@@ -468,33 +286,19 @@ func TestRestrictedModelFetchRepairsRegistryDrift(t *testing.T) {
 	}
 }
 
-func TestRestrictedExcludedGrantDoesNotReregisterOnUnchangedFetch(t *testing.T) {
-	const id = "restricted-excluded-grant-test"
-	restricted := registry.GetCodexProModels()[0].ID
-	auth := restrictedTestAuth("codex", id)
-	auth.Attributes["excluded_models"] = restricted
-	manager := coreauth.NewManager(nil, nil, nil)
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatal(err)
-	}
-	service := &Service{cfg: &config.Config{}, coreManager: manager}
-	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
-		return map[string]struct{}{restricted: {}}
-	}
-	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth), listed: map[string]struct{}{restricted: {}}, fetched: true}
-	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{id: entry}
+func TestRegisteredRestrictedIDsResolveAliasesAndPrefixes(t *testing.T) {
+	const id = "restricted-registered-routes-test"
+	auth := restrictedTestAuth("claude", id)
+	auth.Prefix = "tenant"
 	reg := GlobalModelRegistry()
 	t.Cleanup(func() { reg.UnregisterClient(id) })
-	service.registerModelsForAuth(context.Background(), auth)
-	if containsModelID(reg.GetModelsForClient(id), restricted) {
-		t.Fatal("fixture registered a configured exclusion")
-	}
-	epoch := reg.ClientRegistrationEpoch(id)
-	service.fetchRestrictedModels(context.Background(), auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
-		return []string{restricted}, nil
-	}), entry)
-	if got := reg.ClientRegistrationEpoch(id); got != epoch {
-		t.Fatalf("unchanged, excluded grant re-registered: %d != %d", got, epoch)
+	reg.RegisterClient(id, "claude", []*ModelInfo{
+		{ID: "alias", MetadataModelID: "restricted-a"},
+		{ID: "tenant/restricted-b"},
+	})
+	want := map[string]struct{}{"restricted-a": {}, "restricted-b": {}}
+	if got := registeredRestrictedIDs(auth, want); !maps.Equal(got, want) {
+		t.Fatalf("registered canonical IDs = %v, want %v", got, want)
 	}
 }
 
@@ -502,12 +306,15 @@ func TestRestrictedCodexBuiltinHiddenUntilGranted(t *testing.T) {
 	const modelID = "gpt-image-2.5-flare"
 	auth := restrictedTestAuth("codex", "restricted-codex-builtin-test")
 	service := &Service{}
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+		return map[string]struct{}{modelID: {}}
+	}
 	models := registry.WithCodexBuiltins([]*registry.ModelInfo{{ID: modelID, RestrictedAccess: true}})
 	if containsModelID(service.filterRestrictedModels(auth, models), modelID) {
 		t.Fatal("catalog-restricted built-in visible with unknown access")
 	}
 	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{
-		auth.ID: {identity: restrictedModelIdentity(auth), fetched: true, listed: map[string]struct{}{modelID: {}}},
+		auth.ID: {identity: restrictedModelIdentity(auth), listed: map[string]struct{}{modelID: {}}},
 	}
 	if !containsModelID(service.filterRestrictedModels(auth, models), modelID) {
 		t.Fatal("granted built-in model was hidden")
@@ -562,7 +369,7 @@ func TestRestrictedPluginModelsCannotBypassCatalogAccess(t *testing.T) {
 				}
 				check(false) // Unknown grants fail closed, even with UserDefined=true.
 				service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{
-					id: {identity: restrictedModelIdentity(auth), listed: map[string]struct{}{}, fetched: true},
+					id: {identity: restrictedModelIdentity(auth), listed: map[string]struct{}{}},
 				}
 				check(false) // Known denial also fails closed.
 				service.restrictedAccess.entries[id].listed[restricted] = struct{}{}
@@ -572,158 +379,11 @@ func TestRestrictedPluginModelsCannotBypassCatalogAccess(t *testing.T) {
 	}
 }
 
-func TestCatalogRestrictionCannotBeUndoneByConcurrentRegistration(t *testing.T) {
-	const id = "restricted-catalog-race-test"
-	const modelID = "newly-restricted-plugin-model"
-	auth := restrictedTestAuth("codex", id)
-	manager := coreauth.NewManager(nil, nil, nil)
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatal(err)
-	}
-	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
-	var restricted atomic.Bool
-	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
-		if restricted.Load() {
-			return map[string]struct{}{modelID: {}}
-		}
-		return nil
-	}
-	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth), fetched: true, listed: map[string]struct{}{}}
-	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{id: entry}
-	reg := GlobalModelRegistry()
-	t.Cleanup(func() { reg.UnregisterClient(id) })
-	original := pluginHostModelsForProvider
-	pluginHostModelsForProvider = func(_ *pluginhost.Host, _ string) []*ModelInfo {
-		return []*ModelInfo{{ID: modelID}}
-	}
-	t.Cleanup(func() { pluginHostModelsForProvider = original })
-
-	filtered := make(chan struct{})
-	release := make(chan struct{})
-	var calls atomic.Int32
-	service.restrictedAccess.beforeCommit = func() {
-		if calls.Add(1) == 1 {
-			close(filtered)
-			<-release
-		}
-	}
-	registrationDone := make(chan struct{})
-	go func() {
-		defer close(registrationDone)
-		service.registerModelsForAuth(context.Background(), auth)
-	}()
-	<-filtered
-	// Simulate catalog publication followed by its completed refresh callback.
-	restricted.Store(true)
-	service.refreshModelRegistrationForAuth(auth)
-	if containsModelID(reg.GetModelsForClient(id), modelID) {
-		t.Fatal("catalog refresh left a newly restricted model registered")
-	}
-	close(release)
-	<-registrationDone
-	if containsModelID(reg.GetModelsForClient(id), modelID) {
-		t.Fatal("earlier unrestricted registration overwrote the catalog refresh")
-	}
-	epoch := reg.ClientRegistrationEpoch(id)
-	service.fetchRestrictedModels(context.Background(), auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
-		return nil, nil
-	}), entry)
-	if got := reg.ClientRegistrationEpoch(id); got != epoch {
-		t.Fatalf("unchanged empty access list re-registered: %d != %d", got, epoch)
-	}
-	if containsModelID(reg.GetModelsForClient(id), modelID) {
-		t.Fatal("unchanged empty fetch exposed newly restricted model")
-	}
-}
-
-func TestRestrictedRevocationCannotBeUndoneByConcurrentRegistration(t *testing.T) {
-	const id = "restricted-concurrent-revocation-test"
-	const restricted = "restricted-plugin-race-model"
-	auth := restrictedTestAuth("codex", id)
-	manager := coreauth.NewManager(nil, nil, nil)
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatal(err)
-	}
-	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
-	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
-		return map[string]struct{}{restricted: {}}
-	}
-	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{
-		id: {identity: restrictedModelIdentity(auth), listed: map[string]struct{}{restricted: {}}, fetched: true},
-	}
-	reg := GlobalModelRegistry()
-	t.Cleanup(func() { reg.UnregisterClient(id) })
-	original := pluginHostModelsForProvider
-	pluginHostModelsForProvider = func(_ *pluginhost.Host, _ string) []*ModelInfo {
-		return []*ModelInfo{{ID: restricted}}
-	}
-	t.Cleanup(func() { pluginHostModelsForProvider = original })
-	service.registerModelsForAuth(context.Background(), auth)
-	if !containsModelID(reg.GetModelsForClient(id), restricted) {
-		t.Fatal("fixture failed to register granted model")
-	}
-	filtered := make(chan struct{})
-	release := make(chan struct{})
-	service.restrictedAccess.beforeCommit = func() {
-		service.restrictedAccess.beforeCommit = nil // Only pause the stale registration.
-		close(filtered)
-		<-release
-	}
-	registrationDone := make(chan struct{})
-	go func() {
-		defer close(registrationDone)
-		service.registerModelsForAuth(context.Background(), auth)
-	}()
-	<-filtered
-	readyToPublish := make(chan struct{})
-	service.restrictedAccess.beforePublish = func() { close(readyToPublish) }
-	entry := service.restrictedAccess.entries[id]
-	fetchDone := make(chan struct{})
-	go func() {
-		defer close(fetchDone)
-		service.fetchRestrictedModels(context.Background(), auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
-			return nil, nil
-		}), entry)
-	}()
-	<-readyToPublish // Fetch is ready, but the in-flight registration owns the access snapshot.
-	writerBlocked := !service.restrictedAccess.mu.TryLock()
-	if !writerBlocked {
-		service.restrictedAccess.mu.Unlock()
-	}
-	close(release)
-	<-registrationDone
-	<-fetchDone
-	if !writerBlocked {
-		t.Fatal("revocation could publish between filtering and the registry commit")
-	}
-	if containsModelID(reg.GetModelsForClient(id), restricted) {
-		t.Fatal("concurrent stale registration restored the revoked model")
-	}
-	// A subsequent identical fetch does not re-register; the first refresh must win.
-	service.restrictedAccess.beforePublish = nil
-	epoch := reg.ClientRegistrationEpoch(id)
-	service.fetchRestrictedModels(context.Background(), auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
-		return nil, nil
-	}), entry)
-	if got := reg.ClientRegistrationEpoch(id); got != epoch {
-		t.Fatalf("unchanged denial unexpectedly re-registered: %d != %d", got, epoch)
-	}
-}
-
-func containsModelID(models []*ModelInfo, id string) bool {
-	for _, model := range models {
-		if model.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
 type restrictedRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f restrictedRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
-func TestRestrictedModelQueueIsAsyncAndRefreshesAtSixHours(t *testing.T) {
+func TestRestrictedModelQueueIsAsyncAndRefreshesAtFifteenMinutes(t *testing.T) {
 	const id = "restricted-async-refresh-test"
 	auth := restrictedTestAuth("codex", id)
 	manager := coreauth.NewManager(nil, nil, nil)
@@ -747,7 +407,11 @@ func TestRestrictedModelQueueIsAsyncAndRefreshesAtSixHours(t *testing.T) {
 		if call == 1 {
 			<-unblock
 		}
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"models":[]}`)), Request: req}, nil
+		status, body := http.StatusServiceUnavailable, `unavailable`
+		if call == 2 {
+			status, body = http.StatusOK, `{"models":[]}`
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 	}))
 	service := &Service{cfg: &config.Config{}, coreManager: manager}
 	service.restrictedAccess.ctx = ctx
@@ -758,7 +422,7 @@ func TestRestrictedModelQueueIsAsyncAndRefreshesAtSixHours(t *testing.T) {
 	<-requests
 	service.restrictedAccess.mu.RLock()
 	entry := service.restrictedAccess.entries[id]
-	if entry == nil || !entry.fetching || !entry.nextAt.Equal(now.Add(6*time.Hour)) {
+	if entry == nil || !entry.fetching || !entry.nextAt.Equal(now.Add(restrictedModelRefreshInterval)) {
 		t.Fatalf("unexpected first fetch state: %+v", entry)
 	}
 	firstDone := entry.done
@@ -769,9 +433,12 @@ func TestRestrictedModelQueueIsAsyncAndRefreshesAtSixHours(t *testing.T) {
 	}
 	close(unblock)
 	<-firstDone
+	if !entry.nextAt.Equal(now.Add(restrictedModelRefreshInterval)) {
+		t.Fatalf("failed fetch changed next refresh time: %v", entry.nextAt)
+	}
 	service.queueRestrictedModelFetch(context.Background(), auth)
 	if calls.Load() != 1 {
-		t.Fatal("fetched again before the six-hour interval")
+		t.Fatal("fetched again before the 15-minute interval")
 	}
 	now = now.Add(restrictedModelRefreshInterval)
 	service.queueRestrictedModelFetch(context.Background(), auth)
@@ -807,251 +474,42 @@ func TestRestrictedModelIdentityPreservesKnownAccountAcrossTokenRefresh(t *testi
 	}
 }
 
-func TestLegacyClaudeTokenRotationFailsClosedUntilFirstFetch(t *testing.T) {
-	const id = "legacy-claude-token-rotation-test"
-	const modelID = "restricted-legacy-claude-plugin-model"
-	oldAuth := restrictedTestAuth("claude", id) // No account or organization UUID.
-	manager := coreauth.NewManager(nil, nil, nil)
-	if _, err := manager.Register(context.Background(), oldAuth); err != nil {
-		t.Fatal(err)
-	}
-	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
-	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
-		return map[string]struct{}{modelID: {}}
-	}
-	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{
-		id: {identity: restrictedModelIdentity(oldAuth), listed: map[string]struct{}{modelID: {}}, fetched: true},
-	}
-	reg := GlobalModelRegistry()
-	t.Cleanup(func() { reg.UnregisterClient(id) })
-	original := pluginHostModelsForProvider
-	pluginHostModelsForProvider = func(_ *pluginhost.Host, _ string) []*ModelInfo {
-		return []*ModelInfo{{ID: modelID}}
-	}
-	t.Cleanup(func() { pluginHostModelsForProvider = original })
-	service.registerModelsForAuth(context.Background(), oldAuth)
-	if !containsModelID(reg.GetModelsForClient(id), modelID) {
-		t.Fatal("fixture failed to register the original token's grant")
-	}
-
-	rotated := oldAuth.Clone()
-	rotated.Metadata["access_token"] = "rotated-token"
-	if restrictedModelIdentity(rotated) == restrictedModelIdentity(oldAuth) {
-		t.Fatal("legacy Claude token rotation retained the previous identity")
-	}
-	if _, err := manager.Update(context.Background(), rotated); err != nil {
-		t.Fatal(err)
-	}
-	service.registerModelsForAuth(context.Background(), rotated)
-	if containsModelID(reg.GetModelsForClient(id), modelID) {
-		t.Fatal("rotated token inherited the old grant before its own fetch")
-	}
-	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(rotated)}
-	service.restrictedAccess.entries[id] = entry
-	before := reg.ClientRegistrationEpoch(id)
-	fetchEmpty := func() {
-		service.fetchRestrictedModels(context.Background(), rotated, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
-			return nil, nil
-		}), entry)
-	}
-	fetchEmpty()
-	if got := reg.ClientRegistrationEpoch(id); got <= before {
-		t.Fatalf("first empty fetch did not reconcile new identity: epoch %d <= %d", got, before)
-	}
-	first := reg.ClientRegistrationEpoch(id)
-	fetchEmpty()
-	if got := reg.ClientRegistrationEpoch(id); got != first {
-		t.Fatalf("unchanged empty fetch unexpectedly re-registered: epoch %d != %d", got, first)
-	}
-	if containsModelID(reg.GetModelsForClient(id), modelID) {
-		t.Fatal("legacy token rotation exposed the old grant after fetch")
-	}
-}
-
-func TestOAuthReplacementWithAPIKeyCannotRestoreOldGrant(t *testing.T) {
-	const id = "restricted-oauth-to-apikey-test"
-	const modelID = "old-claude-grant-plugin-model"
-	oldAuth := restrictedTestAuth("claude", id)
-	manager := coreauth.NewManager(nil, nil, nil)
-	if _, err := manager.Register(context.Background(), oldAuth); err != nil {
-		t.Fatal(err)
-	}
-	service := &Service{cfg: &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "replacement-key"}}}, coreManager: manager, pluginHost: pluginhost.New()}
-	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
-		return map[string]struct{}{modelID: {}}
-	}
-	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{
-		id: {identity: restrictedModelIdentity(oldAuth), listed: map[string]struct{}{modelID: {}}, fetched: true},
-	}
-	reg := GlobalModelRegistry()
-	t.Cleanup(func() { reg.UnregisterClient(id) })
-	original := pluginHostModelsForProvider
-	pluginHostModelsForProvider = func(_ *pluginhost.Host, _ string) []*ModelInfo {
-		return []*ModelInfo{{ID: modelID}}
-	}
-	t.Cleanup(func() { pluginHostModelsForProvider = original })
-	service.registerModelsForAuth(context.Background(), oldAuth)
-	if !containsModelID(reg.GetModelsForClient(id), modelID) {
-		t.Fatal("fixture failed to register the OAuth grant")
-	}
-
-	var registrations atomic.Int32
-	atFinalPass := make(chan struct{})
-	release := make(chan struct{})
-	service.restrictedAccess.beforeCommit = func() {
-		if registrations.Add(1) == 2 {
-			close(atFinalPass)
-			<-release
-		}
-	}
-	oldRefreshDone := make(chan struct{})
-	go func() {
-		defer close(oldRefreshDone)
-		service.refreshModelRegistrationForAuth(oldAuth)
-	}()
-	<-atFinalPass
-
-	newAuth := oldAuth.Clone()
-	newAuth.Attributes = map[string]string{"api_key": "replacement-key", "source": "config:claude", "config_index": "0"}
-	newAuth.Metadata = nil
-	if _, err := manager.Update(context.Background(), newAuth); err != nil {
-		t.Fatal(err)
-	}
-	service.registerModelsForAuth(context.Background(), newAuth)
-	if containsModelID(reg.GetModelsForClient(id), modelID) {
-		t.Fatal("API-key registration inherited OAuth grant")
-	}
-	close(release)
-	<-oldRefreshDone
-	service.queueRestrictedModelFetch(context.Background(), newAuth)
-	service.sweepRestrictedModelAccess(context.Background())
-	service.restrictedAccess.mu.RLock()
-	entry := service.restrictedAccess.entries[id]
-	service.restrictedAccess.mu.RUnlock()
-	if entry != nil {
-		t.Fatal("API-key replacement retained the OAuth access cache")
-	}
-	if containsModelID(reg.GetModelsForClient(id), modelID) {
-		t.Fatal("old final pass restored the OAuth grant after API-key replacement")
-	}
-	// A delayed old refresh may begin after the API-key registration itself.
-	service.registerModelsForAuth(context.Background(), oldAuth)
-	if containsModelID(reg.GetModelsForClient(id), modelID) {
-		t.Fatal("late old registration restored the OAuth grant")
-	}
-
-	// A stale attempt must not supersede a current registration still in flight.
-	filteredNew := make(chan struct{})
-	releaseNew := make(chan struct{})
-	service.restrictedAccess.beforeCommit = func() {
-		close(filteredNew)
-		<-releaseNew
-	}
-	before := reg.ClientRegistrationEpoch(id)
-	newDone := make(chan struct{})
-	go func() {
-		defer close(newDone)
-		service.registerModelsForAuth(context.Background(), newAuth)
-	}()
-	<-filteredNew
-	service.registerModelsForAuth(context.Background(), oldAuth)
-	close(releaseNew)
-	<-newDone
-	if got := reg.ClientRegistrationEpoch(id); got <= before {
-		t.Fatalf("stale old attempt suppressed current registration: epoch %d <= %d", got, before)
-	}
-	if containsModelID(reg.GetModelsForClient(id), modelID) {
-		t.Fatal("concurrent late old attempt restored the OAuth grant")
-	}
-}
-
-func TestRestrictedAccountReplacementReconcilesUnchangedEmptyFetch(t *testing.T) {
-	const id = "restricted-account-replacement-test"
-	const restricted = "restricted-replacement-plugin-model"
-	oldAuth := restrictedTestAuth("codex", id)
-	manager := coreauth.NewManager(nil, nil, nil)
-	if _, errRegister := manager.Register(context.Background(), oldAuth); errRegister != nil {
-		t.Fatal(errRegister)
-	}
-	manager.RegisterExecutor(runtimeexecutor.NewCodexAutoExecutor(nil))
-	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
-	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
-		return map[string]struct{}{restricted: {}}
-	}
-	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{
-		id: {identity: restrictedModelIdentity(oldAuth), listed: map[string]struct{}{restricted: {}}, fetched: true},
-	}
-	reg := GlobalModelRegistry()
-	t.Cleanup(func() { reg.UnregisterClient(id) })
-	original := pluginHostModelsForProvider
-	pluginHostModelsForProvider = func(_ *pluginhost.Host, _ string) []*ModelInfo {
-		return []*ModelInfo{{ID: restricted}}
-	}
-	t.Cleanup(func() { pluginHostModelsForProvider = original })
-	service.registerModelsForAuth(context.Background(), oldAuth)
-	if !containsModelID(reg.GetModelsForClient(id), restricted) {
-		t.Fatal("fixture failed to register the old account's grant")
-	}
-
-	var registrations atomic.Int32
-	atFinalPass := make(chan struct{})
-	release := make(chan struct{})
-	service.restrictedAccess.beforeCommit = func() {
-		if registrations.Add(1) == 2 {
-			close(atFinalPass)
-			<-release
-		}
-	}
-	oldRefreshDone := make(chan struct{})
-	go func() {
-		defer close(oldRefreshDone)
-		service.refreshModelRegistrationForAuth(oldAuth)
-	}()
-	<-atFinalPass
-
-	newAuth := oldAuth.Clone()
-	newAuth.Metadata["account_id"] = "account-2"
-	if _, errUpdate := manager.Update(context.Background(), newAuth); errUpdate != nil {
-		t.Fatal(errUpdate)
-	}
-	service.registerModelsForAuth(context.Background(), newAuth)
-	if containsModelID(reg.GetModelsForClient(id), restricted) {
-		t.Fatal("new account inherited the old account's cached grant")
-	}
-	close(release)
-	<-oldRefreshDone
-	if containsModelID(reg.GetModelsForClient(id), restricted) {
-		t.Fatal("stale final pass restored the previous account's grant")
-	}
-
-	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", restrictedRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"models":[]}`)), Request: req}, nil
-	}))
-	staleEpoch := reg.ClientRegistrationEpoch(id)
-	service.queueRestrictedModelFetch(ctx, newAuth)
-	service.restrictedAccess.mu.RLock()
-	entry := service.restrictedAccess.entries[id]
-	if entry == nil || entry.identity != restrictedModelIdentity(newAuth) || entry.done == nil {
-		service.restrictedAccess.mu.RUnlock()
-		t.Fatalf("new account did not replace the cached identity: %+v", entry)
-	}
-	firstDone := entry.done
-	service.restrictedAccess.mu.RUnlock()
-	<-firstDone
-	if containsModelID(reg.GetModelsForClient(id), restricted) {
-		t.Fatal("first empty fetch left the old account's grant registered")
-	}
-	firstEpoch := reg.ClientRegistrationEpoch(id)
-	if firstEpoch <= staleEpoch {
-		t.Fatalf("first empty fetch did not reconcile the registration: epoch %d <= %d", firstEpoch, staleEpoch)
-	}
-	service.restrictedAccess.mu.Lock()
-	entry.done = nil // Direct subsequent fetch does not reuse the completed request's channel.
-	service.restrictedAccess.mu.Unlock()
-	service.fetchRestrictedModels(context.Background(), newAuth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
-		return nil, nil
-	}), entry)
-	if got := reg.ClientRegistrationEpoch(id); got != firstEpoch {
-		t.Fatalf("unchanged empty fetch re-registered: epoch %d != %d", got, firstEpoch)
+func TestRestrictedAPIKeyAliasUsesConfiguredUpstreamName(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			const upstream = "restricted-upstream"
+			cfg := &config.Config{}
+			if provider == "claude" {
+				cfg.ClaudeKey = []config.ClaudeKey{{APIKey: "fake-key", Models: []internalconfig.ClaudeModel{{Name: upstream, Alias: "public-alias"}}}}
+			} else {
+				cfg.CodexKey = []config.CodexKey{{APIKey: "fake-key", Models: []internalconfig.CodexModel{{Name: upstream, Alias: "public-alias"}}}}
+			}
+			service := &Service{cfg: cfg}
+			service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+				return map[string]struct{}{upstream: {}}
+			}
+			id := provider + "-alias-restricted-test"
+			reg := GlobalModelRegistry()
+			t.Cleanup(func() { reg.UnregisterClient(id) })
+			auth := &coreauth.Auth{ID: id, Provider: provider, Attributes: map[string]string{"api_key": "fake-key", "source": "config:" + provider, "config_index": "0"}}
+			service.registerModelsForAuth(context.Background(), auth)
+			if !containsModelID(reg.GetModelsForClient(id), "public-alias") {
+				t.Fatal("explicit upstream model was hidden behind its alias")
+			}
+			// Listing only the alias, not its upstream name, must not grant it.
+			if _, ok := service.explicitRestrictedModelIDs(auth)["public-alias"]; ok {
+				t.Fatal("alias counted as an explicit upstream model")
+			}
+			aliasOnly := &Service{cfg: &config.Config{}}
+			if provider == "claude" {
+				aliasOnly.cfg.ClaudeKey = []config.ClaudeKey{{APIKey: "fake-key", Models: []internalconfig.ClaudeModel{{Name: "ordinary-upstream", Alias: upstream}}}}
+			} else {
+				aliasOnly.cfg.CodexKey = []config.CodexKey{{APIKey: "fake-key", Models: []internalconfig.CodexModel{{Name: "ordinary-upstream", Alias: upstream}}}}
+			}
+			aliasOnly.restrictedAccess.restrictedIDs = service.restrictedAccess.restrictedIDs
+			if got := aliasOnly.filterRestrictedModels(auth, []*ModelInfo{{ID: upstream, MetadataModelID: upstream}}); len(got) != 0 {
+				t.Fatalf("alias alone granted an unconfigured restricted upstream model: %v", modelIDs(got))
+			}
+		})
 	}
 }
