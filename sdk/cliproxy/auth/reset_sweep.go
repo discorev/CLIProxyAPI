@@ -83,7 +83,9 @@ func (m *Manager) sweepResets(ctx context.Context) {
 	auths := m.List()
 	sort.Slice(auths, func(i, j int) bool { return auths[i].ID < auths[j].ID })
 	var candidates []resetCandidate
-	allClaudeExhausted := true
+	// allExhausted is tracked per provider; a provider stays true only while
+	// every enabled account of it establishes exhaustion.
+	allExhausted := map[string]bool{"claude": true, "codex": true}
 	for _, auth := range auths {
 		if ctx.Err() != nil {
 			return
@@ -103,12 +105,12 @@ func (m *Manager) sweepResets(ctx context.Context) {
 		if entry != nil {
 			_, recovery = exhaustedResetWindows(entry.CredentialUsage, now)
 		}
-		// Every enabled OAuth account must positively establish exhaustion.
-		// Unknown, failed, empty or refreshing accounts are not evidence that
-		// the whole pool is exhausted; ancillary errors alone are immaterial.
-		if strings.EqualFold(auth.Provider, "claude") &&
-			(!fresh || recovery.IsZero() || busy || due || locked || entry.Refreshing) {
-			allClaudeExhausted = false
+		// Every enabled OAuth account of a provider must positively establish
+		// exhaustion. Unknown, failed, empty or refreshing accounts are not
+		// evidence that the whole pool is exhausted; ancillary errors alone are
+		// immaterial.
+		if !fresh || recovery.IsZero() || busy || due || locked || entry.Refreshing {
+			allExhausted[resetProvider(auth)] = false
 		}
 		if due {
 			flight, current, fetcher, leader, err := m.beginUsageRefresh(auth.ID, "reset_loop")
@@ -123,30 +125,36 @@ func (m *Manager) sweepResets(ctx context.Context) {
 		candidates = append(candidates, resetCandidate{auth: auth, entry: entry, recovery: recovery})
 	}
 	var selected []resetCandidate
-	var claude *resetCandidate
+	// best holds each provider's single claim for this tick: every Claude
+	// rule, and Codex all_exhausted. Codex last_chance claims are independent.
+	best := make(map[string]*resetCandidate, 2)
 	for _, candidate := range candidates {
-		if strings.EqualFold(candidate.auth.Provider, "codex") {
+		provider := resetProvider(candidate.auth)
+		var choice *resetChoice
+		switch provider {
+		case "codex":
 			refused := func(creditID string) bool { return m.lastChanceRefused(candidate.auth.ID, creditID) }
-			if choice := codexResetChoice(candidate.entry.CredentialUsage, now, refused); choice != nil {
-				candidate.choice = *choice
-				selected = append(selected, candidate)
-			}
-			continue
+			choice = codexResetChoice(candidate.entry.CredentialUsage, now, allExhausted[provider], refused)
+		case "claude":
+			choice = claudeResetChoice(candidate.entry.CredentialUsage, now, allExhausted[provider])
 		}
-		choice := claudeResetChoice(candidate.entry.CredentialUsage, now, allClaudeExhausted)
 		if choice == nil {
 			continue
 		}
 		candidate.choice = *choice
-		// Spend expiring grants before banked ones, then prefer the account
-		// furthest from natural relief. There is still only one claim per tick.
-		if claude == nil || resetCandidateBefore(candidate, *claude) {
+		if provider == "codex" && choice.rule == "last_chance" {
+			selected = append(selected, candidate)
+			continue
+		}
+		if current := best[provider]; current == nil || resetCandidateBefore(candidate, *current) {
 			copyCandidate := candidate
-			claude = &copyCandidate
+			best[provider] = &copyCandidate
 		}
 	}
-	if claude != nil {
-		selected = append(selected, *claude)
+	for _, provider := range []string{"codex", "claude"} {
+		if candidate := best[provider]; candidate != nil {
+			selected = append(selected, *candidate)
+		}
 	}
 	var dryRun []resetCandidate
 	for _, candidate := range selected {
@@ -166,16 +174,28 @@ func (m *Manager) lastChanceRefused(authID, creditID string) bool {
 	return refused
 }
 
+func resetProvider(auth *Auth) string {
+	return strings.ToLower(strings.TrimSpace(auth.Provider))
+}
+
+// resetCandidateBefore orders one provider's claims. Urgent rules (last_chance,
+// expiring_exhausted) come before all_exhausted. Within each group the reset
+// that would be spent expiring soonest goes first, so it is not left to lapse
+// behind a longer-lived one; resets without an expiry sort last. Equal
+// expiries prefer the account furthest from natural recovery, then auth ID.
 func resetCandidateBefore(candidate, other resetCandidate) bool {
 	urgent := candidate.choice.rule != "all_exhausted"
 	otherUrgent := other.choice.rule != "all_exhausted"
 	if urgent != otherUrgent {
 		return urgent
 	}
-	if urgent && !candidate.choice.expires.Equal(other.choice.expires) {
-		return candidate.choice.expires.Before(other.choice.expires)
+	if expires, otherExpires := candidate.choice.expires, other.choice.expires; !expires.Equal(otherExpires) {
+		return otherExpires.IsZero() || !expires.IsZero() && expires.Before(otherExpires)
 	}
-	return candidate.recovery.After(other.recovery)
+	if !candidate.recovery.Equal(other.recovery) {
+		return candidate.recovery.After(other.recovery)
+	}
+	return candidate.auth.ID < other.auth.ID
 }
 
 func (m *Manager) startAutomaticReset(ctx context.Context, candidate resetCandidate) {

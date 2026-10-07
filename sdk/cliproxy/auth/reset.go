@@ -24,7 +24,7 @@ type resetCreditKey struct{ authID, creditID string }
 
 // rememberLastChanceRefusalLocked stops repeating a Codex last_chance attempt
 // that upstream answered with nothing to reset; nothing was spent. The
-// exhausted rule may still spend the credit later. usage.mu must be held.
+// all_exhausted rule may still spend the credit later. usage.mu must be held.
 func (m *Manager) rememberLastChanceRefusalLocked(auth *Auth, choice resetChoice, outcome string) {
 	if choice.rule != "last_chance" || outcome != "not_limited" || choice.creditID == "" ||
 		!strings.EqualFold(auth.Provider, "codex") {

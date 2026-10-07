@@ -513,6 +513,7 @@ func (s *Service) completeModelRegistrationForAuthWithCache(ctx context.Context,
 	// have an empty supportedModelSet (because Register/Update upserts into the
 	// scheduler before registerModelsForAuth runs) and are invisible to the scheduler.
 	s.coreManager.RefreshSchedulerEntry(auth.ID)
+	s.queueRestrictedModelFetch(ctx, auth)
 }
 
 func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
@@ -527,6 +528,7 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 	if existing, ok := s.coreManager.GetByID(id); ok && existing != nil {
 		provider = strings.TrimSpace(existing.Provider)
 	}
+	s.dropRestrictedModelAccess(id)
 	GlobalModelRegistry().UnregisterClient(id)
 	s.coreManager.Remove(ctx, id)
 	if strings.EqualFold(provider, "codex") {

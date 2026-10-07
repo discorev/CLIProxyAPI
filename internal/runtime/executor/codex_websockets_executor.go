@@ -76,6 +76,13 @@ func (e *CodexAutoExecutor) FetchUsage(ctx context.Context, auth *cliproxyauth.A
 	return e.httpExec.FetchUsage(ctx, auth)
 }
 
+func (e *CodexAutoExecutor) ListUpstreamModels(ctx context.Context, auth *cliproxyauth.Auth) ([]string, error) {
+	if e == nil || e.httpExec == nil {
+		return nil, fmt.Errorf("codex auto executor: http executor is nil")
+	}
+	return e.httpExec.ListUpstreamModels(ctx, auth)
+}
+
 func (e *CodexAutoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("codex auto executor: executor is nil")

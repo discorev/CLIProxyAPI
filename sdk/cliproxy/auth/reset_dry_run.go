@@ -126,10 +126,8 @@ func (m *Manager) logResetDecisions(ctx context.Context, candidates []resetCandi
 
 func resetDecisionReason(rule string) string {
 	switch rule {
-	case "exhausted":
-		return "credit expires before exhausted windows recover"
 	case "all_exhausted":
-		return "all enabled Claude accounts exhausted; recovery more than one hour away"
+		return "all enabled accounts of this provider exhausted; recovery more than one hour away"
 	case "expiring_exhausted":
 		return "grant expires before exhausted windows recover"
 	case "last_chance":

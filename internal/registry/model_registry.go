@@ -39,6 +39,8 @@ type ModelInfo struct {
 	// MetadataModelID identifies the canonical model used to resolve client metadata.
 	// It is internal and must not be exposed in model-list responses.
 	MetadataModelID string `json:"-"`
+	// RestrictedAccess is catalog-only metadata; it must never appear in model responses.
+	RestrictedAccess bool `json:"-"`
 	// ExplicitThinking indicates thinking/reasoning configuration was explicitly configured for this model.
 	ExplicitThinking bool `json:"-"`
 	// ExplicitInputModalities indicates input modalities were explicitly configured for this model.
@@ -121,12 +123,14 @@ func (m *ModelInfo) UnmarshalJSON(data []byte) error {
 		*modelInfoAlias
 		NativeCapabilities         *NativeCapabilities `json:"native_capabilities"`
 		SupportConfigurationUpdate bool                `json:"support_configuration_update"`
+		RestrictedAccess           bool                `json:"restricted_access"`
 	}{modelInfoAlias: (*modelInfoAlias)(m)}
 	if errUnmarshal := json.Unmarshal(data, &aux); errUnmarshal != nil {
 		return errUnmarshal
 	}
 	m.NativeCapabilities = aux.NativeCapabilities
 	m.SupportConfigurationUpdate = aux.SupportConfigurationUpdate
+	m.RestrictedAccess = aux.RestrictedAccess
 	return nil
 }
 
