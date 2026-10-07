@@ -6,8 +6,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
-	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -140,35 +138,7 @@ func (e *CodexAutoExecutor) UpstreamDisconnectChan(sessionID string) <-chan erro
 }
 
 func codexWebsocketsEnabled(auth *cliproxyauth.Auth) bool {
-	if auth == nil {
-		return false
-	}
-	if len(auth.Attributes) > 0 {
-		if raw := strings.TrimSpace(auth.Attributes["websockets"]); raw != "" {
-			parsed, errParse := strconv.ParseBool(raw)
-			if errParse == nil {
-				return parsed
-			}
-		}
-	}
-	if len(auth.Metadata) == 0 {
-		return false
-	}
-	raw, ok := auth.Metadata["websockets"]
-	if !ok || raw == nil {
-		return false
-	}
-	switch v := raw.(type) {
-	case bool:
-		return v
-	case string:
-		parsed, errParse := strconv.ParseBool(strings.TrimSpace(v))
-		if errParse == nil {
-			return parsed
-		}
-	default:
-	}
-	return false
+	return cliproxyauth.WebsocketsEnabled(auth)
 }
 
 // SupportsApplyPatch requires both selectable transports to support the tool.

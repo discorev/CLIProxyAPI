@@ -602,21 +602,11 @@ func isRuntimeOnlyAuth(auth *coreauth.Auth) bool {
 }
 
 func authWebsocketsValue(auth *coreauth.Auth) (bool, bool) {
-	if auth == nil {
-		return false, false
+	enabled, explicit := coreauth.WebsocketsSetting(auth)
+	if explicit || enabled {
+		return enabled, true
 	}
-	if auth.Attributes != nil {
-		if raw := strings.TrimSpace(auth.Attributes["websockets"]); raw != "" {
-			parsed, errParse := strconv.ParseBool(raw)
-			if errParse == nil {
-				return parsed, true
-			}
-		}
-	}
-	if auth.Metadata == nil {
-		return false, false
-	}
-	return parseWebsocketsValue(auth.Metadata["websockets"])
+	return false, false
 }
 
 func parsePriorityValue(raw any) (int, bool) {
