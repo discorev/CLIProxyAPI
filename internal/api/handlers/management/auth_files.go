@@ -854,33 +854,13 @@ func authWeightValue(auth *coreauth.Auth) (int64, bool) {
 	return weight, errWeight == nil
 }
 
+// authWebsocketsValue reports the effective websocket setting. Explicit values
+// are always reported; Codex OAuth/file credentials also report their implicit
+// default (enabled) so the dashboard shows what the proxy will actually do.
 func authWebsocketsValue(auth *coreauth.Auth) (bool, bool) {
-	if auth == nil {
-		return false, false
-	}
-	if auth.Attributes != nil {
-		if raw := strings.TrimSpace(auth.Attributes["websockets"]); raw != "" {
-			parsed, errParse := strconv.ParseBool(raw)
-			if errParse == nil {
-				return parsed, true
-			}
-		}
-	}
-	if auth.Metadata == nil {
-		return false, false
-	}
-	raw, ok := auth.Metadata["websockets"]
-	if !ok || raw == nil {
-		return false, false
-	}
-	switch v := raw.(type) {
-	case bool:
-		return v, true
-	case string:
-		parsed, errParse := strconv.ParseBool(strings.TrimSpace(v))
-		if errParse == nil {
-			return parsed, true
-		}
+	enabled, explicit := coreauth.WebsocketsSetting(auth)
+	if explicit || enabled {
+		return enabled, true
 	}
 	return false, false
 }

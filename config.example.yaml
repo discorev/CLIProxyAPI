@@ -623,7 +623,7 @@ upstream:
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #           disable-codex-cloaking: false # optional: true disables cloaking; OAuth provider settings do not apply here
 #           alpha-search: false # optional: allow this key to serve /v1/alpha/search via base-url + /alpha/search
-#           websockets: false # optional: use the Codex upstream WebSocket transport
+#           websockets: false # optional: use the Codex upstream WebSocket transport (opt-in for API keys; Codex OAuth files default to on)
 #
 #   # Claude API keys
 #
@@ -866,6 +866,10 @@ claude-native-passthrough: true
 oauth:
   # Authentication directory (supports ~ for home directory)
   auth-dir: "~/.cli-proxy-api"
+
+  # Codex OAuth auth files use the upstream Responses WebSocket transport by default: the
+  # ChatGPT backend always supports it. Set "websockets": false in a Codex auth JSON file to
+  # opt that credential out. Codex API-key entries (api-keys.codex[].keys[].websockets) stay opt-in.
 
   # Core auth auto-refresh and manual refresh-all worker pool size (OAuth/file-based auth token refresh).
   # When > 0, overrides the default worker count (16).

@@ -2,7 +2,6 @@ package openai
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -12,33 +11,8 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-func websocketUpstreamSupportsIncrementalInput(attributes map[string]string, metadata map[string]any) bool {
-	if len(attributes) > 0 {
-		if raw := strings.TrimSpace(attributes["websockets"]); raw != "" {
-			parsed, errParse := strconv.ParseBool(raw)
-			if errParse == nil {
-				return parsed
-			}
-		}
-	}
-	if len(metadata) == 0 {
-		return false
-	}
-	raw, ok := metadata["websockets"]
-	if !ok || raw == nil {
-		return false
-	}
-	switch value := raw.(type) {
-	case bool:
-		return value
-	case string:
-		parsed, errParse := strconv.ParseBool(strings.TrimSpace(value))
-		if errParse == nil {
-			return parsed
-		}
-	default:
-	}
-	return false
+func websocketUpstreamSupportsIncrementalInput(auth *coreauth.Auth) bool {
+	return coreauth.WebsocketsEnabled(auth)
 }
 
 func (h *OpenAIResponsesAPIHandler) websocketUpstreamSupportsIncrementalInputForModel(modelName string) bool {
@@ -117,7 +91,7 @@ func (h *OpenAIResponsesAPIHandler) responsesWebsocketUsesUpstreamWebsocketPasst
 		} else if authProvider != provider {
 			return false
 		}
-		if !websocketUpstreamSupportsIncrementalInput(auth.Attributes, auth.Metadata) {
+		if !websocketUpstreamSupportsIncrementalInput(auth) {
 			return false
 		}
 	}
@@ -128,7 +102,7 @@ func responsesWebsocketAuthSupportsIncrementalInput(auth *coreauth.Auth) bool {
 	if auth == nil {
 		return false
 	}
-	return websocketUpstreamSupportsIncrementalInput(auth.Attributes, auth.Metadata)
+	return websocketUpstreamSupportsIncrementalInput(auth)
 }
 
 func responsesWebsocketPinnedAuthMatchesModel(auth *coreauth.Auth, modelName string, pinnedModelKey string, homeRuntime bool) bool {
