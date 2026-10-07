@@ -141,7 +141,13 @@ func TestRestrictedModelFetchRetainsLastListAndOnlyReregistersOnGrantChanges(t *
 	if got := reg.ClientRegistrationEpoch(id); got != grantedEpoch {
 		t.Fatalf("change to unrestricted IDs re-registered: epoch %d != %d", got, grantedEpoch)
 	}
+	now := time.Date(2026, time.October, 7, 12, 0, 0, 0, time.UTC)
+	service.restrictedAccess.now = func() time.Time { return now }
+	entry.nextAt = now.Add(restrictedModelRefreshInterval)
 	fetch(nil, errors.New("upstream unavailable"))
+	if !entry.nextAt.Equal(now.Add(restrictedModelRetryInterval)) {
+		t.Fatalf("failed fetch next attempt = %v, want %v", entry.nextAt, now.Add(restrictedModelRetryInterval))
+	}
 	if got := reg.ClientRegistrationEpoch(id); got != grantedEpoch {
 		t.Fatalf("failed fetch re-registered: epoch %d != %d", got, grantedEpoch)
 	}

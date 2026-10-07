@@ -15,7 +15,11 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const restrictedModelRefreshInterval = 6 * time.Hour
+const (
+	restrictedModelRefreshInterval = 6 * time.Hour
+	// Unknown access hides restricted models, so failed fetches retry sooner.
+	restrictedModelRetryInterval = 15 * time.Minute
+)
 
 type restrictedModelAccessEntry struct {
 	identity string
@@ -33,6 +37,13 @@ type restrictedModelAccessCache struct {
 	started       bool
 	now           func() time.Time                 // Injectable for deterministic refresh tests.
 	restrictedIDs func(string) map[string]struct{} // Injectable catalog view for tests.
+}
+
+func (c *restrictedModelAccessCache) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
 }
 
 func restrictedModelIdentity(auth *coreauth.Auth) string {
@@ -125,10 +136,7 @@ func (s *Service) queueRestrictedModelFetch(ctx context.Context, auth *coreauth.
 		entry = &restrictedModelAccessEntry{identity: identity}
 		cache.entries[auth.ID] = entry
 	}
-	now := time.Now()
-	if cache.now != nil {
-		now = cache.now()
-	}
+	now := cache.clock()
 	if entry.fetching || now.Before(entry.nextAt) {
 		cache.mu.Unlock()
 		return
@@ -203,6 +211,7 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 		return
 	}
 	if errFetch != nil {
+		entry.nextAt = cache.clock().Add(restrictedModelRetryInterval)
 		cache.mu.Unlock()
 		if ctx.Err() == nil {
 			log.WithField("auth_id", auth.ID).Warn("restricted model list fetch failed")
