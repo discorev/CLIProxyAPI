@@ -283,7 +283,9 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 	restricted := restrictedIDs(auth.Provider)
 	previous := grantedRestrictedIDs(entry.listed, restricted)
 	granted := grantedRestrictedIDs(listed, restricted)
-	changed := !maps.Equal(previous, granted)
+	// The first successful fetch must reconcile this identity even if both grant
+	// sets are empty: an older identity's in-flight registration may have won.
+	changed := !entry.fetched || !maps.Equal(previous, granted)
 	entry.listed = listed
 	entry.fetched = true
 	cache.mu.Unlock()
@@ -301,8 +303,10 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 			changedIDs[id] = struct{}{}
 		}
 	}
-	modelIDs := slices.Sorted(maps.Keys(changedIDs))
-	log.WithFields(log.Fields{"auth_id": auth.ID, "model_ids": strings.Join(modelIDs, ",")}).Info("restricted model access changed")
+	if len(changedIDs) > 0 {
+		modelIDs := slices.Sorted(maps.Keys(changedIDs))
+		log.WithFields(log.Fields{"auth_id": auth.ID, "model_ids": strings.Join(modelIDs, ",")}).Info("restricted model access changed")
+	}
 	s.refreshModelRegistrationForAuth(auth)
 }
 
