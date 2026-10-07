@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -22,12 +23,14 @@ const (
 )
 
 type restrictedModelAccessEntry struct {
-	identity string
-	listed   map[string]struct{}
-	fetched  bool
-	fetching bool
-	done     chan struct{}
-	nextAt   time.Time
+	identity     string
+	listed       map[string]struct{}
+	fetched      bool
+	fetching     bool
+	pending      atomic.Bool   // A changed grant or drift still needs a successful registration.
+	appliedEpoch atomic.Uint64 // Distinguishes registry drift from a successfully filtered-out grant.
+	done         chan struct{}
+	nextAt       time.Time
 }
 
 type restrictedModelAccessCache struct {
@@ -285,6 +288,59 @@ func grantedRestrictedIDs(listed, restricted map[string]struct{}) map[string]str
 	return granted
 }
 
+// Registered aliases and prefixed routes retain their source in MetadataModelID.
+func registeredRestrictedIDs(auth *coreauth.Auth, restricted map[string]struct{}) map[string]struct{} {
+	registered := make(map[string]struct{})
+	for _, model := range GlobalModelRegistry().GetModelsForClient(auth.ID) {
+		if _, ok := restricted[model.ID]; ok {
+			registered[model.ID] = struct{}{}
+		}
+		if _, ok := restricted[model.MetadataModelID]; ok {
+			registered[model.MetadataModelID] = struct{}{}
+		}
+		if prefix := strings.TrimSpace(auth.Prefix); prefix != "" {
+			if id, ok := strings.CutPrefix(model.ID, prefix+"/"); ok {
+				if _, restrictedID := restricted[id]; restrictedID {
+					registered[id] = struct{}{}
+				}
+			}
+		}
+	}
+	return registered
+}
+
+// Call under the access cache's RLock, held through any fail-closed unregister.
+func (s *Service) hasDeniedRegisteredRestrictedModelsLocked(auth *coreauth.Auth) bool {
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	if (provider != "claude" && provider != "codex") || restrictedModelIdentity(auth) == "" {
+		return false
+	}
+	restrictedIDs := s.restrictedAccess.restrictedIDs
+	if restrictedIDs == nil {
+		restrictedIDs = restrictedCatalogIDs
+	}
+	restricted := restrictedIDs(provider)
+	entry := s.restrictedAccess.entries[auth.ID]
+	var granted map[string]struct{}
+	if entry != nil && entry.fetched && entry.identity == restrictedModelIdentity(auth) {
+		granted = grantedRestrictedIDs(entry.listed, restricted)
+	}
+	for id := range registeredRestrictedIDs(auth, restricted) {
+		if _, ok := granted[id]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// Call under the access cache's RLock, after a successful registry commit.
+func (s *Service) markRestrictedModelRegistrationAppliedLocked(auth *coreauth.Auth) {
+	if entry := s.restrictedAccess.entries[auth.ID]; entry != nil && entry.identity == restrictedModelIdentity(auth) {
+		entry.appliedEpoch.Store(GlobalModelRegistry().ClientRegistrationEpoch(auth.ID))
+		entry.pending.Store(false)
+	}
+}
+
 func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth, lister coreauth.UpstreamModelLister, entry *restrictedModelAccessEntry) {
 	done := entry.done
 	defer func() {
@@ -328,13 +384,32 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 	restricted := restrictedIDs(auth.Provider)
 	previous := grantedRestrictedIDs(entry.listed, restricted)
 	granted := grantedRestrictedIDs(listed, restricted)
-	// The first successful fetch must reconcile this identity even if both grant
-	// sets are empty: an older identity's in-flight registration may have won.
+	// The first fetch, a grant change, or drift in the actual registration
+	// requires reconciliation. A failed plugin discovery leaves pending set so
+	// the next successful fetch retries even after fail-closing the registration.
 	changed := !entry.fetched || !maps.Equal(previous, granted)
+	registered := registeredRestrictedIDs(auth, restricted)
+	drifted := false
+	for id := range registered {
+		if _, allowed := granted[id]; !allowed {
+			drifted = true // Never preserve a denied registration.
+			break
+		}
+	}
+	if !drifted && !maps.Equal(registered, granted) {
+		// A successfully applied registration can omit a granted model due to
+		// plan or config exclusions. Retry only if that registration changed.
+		applied := entry.appliedEpoch.Load()
+		drifted = applied == 0 || applied != GlobalModelRegistry().ClientRegistrationEpoch(auth.ID)
+	}
+	needsRefresh := changed || drifted || entry.pending.Load()
 	entry.listed = listed
 	entry.fetched = true
+	if needsRefresh {
+		entry.pending.Store(true)
+	}
 	cache.mu.Unlock()
-	if !changed {
+	if !needsRefresh {
 		return
 	}
 	changedIDs := make(map[string]struct{})

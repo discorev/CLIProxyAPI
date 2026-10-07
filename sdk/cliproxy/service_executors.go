@@ -522,6 +522,13 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 		return false
 	}
 	if result.Err != nil {
+		// Discovery failure cannot preserve a registration that still exposes
+		// models revoked by the latest upstream list.
+		s.restrictedAccess.mu.RLock()
+		if s.hasDeniedRegisteredRestrictedModelsLocked(a) {
+			s.commitModelRegistration(a, seq, func() { GlobalModelRegistry().UnregisterClient(a.ID) })
+		}
+		s.restrictedAccess.mu.RUnlock()
 		return true
 	}
 	activeAuth := a
@@ -582,9 +589,13 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 		models = applyOAuthSettingsForAuth(s.cfg, providerKey, activeAuthKind, models)
 		s.commitModelRegistration(activeAuth, seq, func() {
 			s.registerResolvedModelsForAuth(activeAuth, providerKey, applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+			s.markRestrictedModelRegistrationAppliedLocked(activeAuth)
 		})
 		return true
 	}
-	s.commitModelRegistration(activeAuth, seq, func() { GlobalModelRegistry().UnregisterClient(activeAuth.ID) })
+	s.commitModelRegistration(activeAuth, seq, func() {
+		GlobalModelRegistry().UnregisterClient(activeAuth.ID)
+		s.markRestrictedModelRegistrationAppliedLocked(activeAuth)
+	})
 	return true
 }

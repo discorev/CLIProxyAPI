@@ -309,6 +309,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		}
 		s.commitModelRegistration(a, seq, func() {
 			s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+			s.markRestrictedModelRegistrationAppliedLocked(a)
 		})
 		if strings.EqualFold(strings.TrimSpace(a.Provider), "antigravity") {
 			s.asyncProbeAntigravityCapabilities(ctx, a, key)
@@ -316,7 +317,10 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		return
 	}
 
-	s.commitModelRegistration(a, seq, func() { GlobalModelRegistry().UnregisterClient(a.ID) })
+	s.commitModelRegistration(a, seq, func() {
+		GlobalModelRegistry().UnregisterClient(a.ID)
+		s.markRestrictedModelRegistrationAppliedLocked(a)
+	})
 }
 
 // refreshModelRegistrationForAuth re-applies the latest model registration for

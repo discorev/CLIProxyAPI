@@ -162,13 +162,18 @@ func TestRestrictedModelFetchRetainsLastListAndOnlyReregistersOnGrantChanges(t *
 	if _, err := manager.Register(context.Background(), auth); err != nil {
 		t.Fatal(err)
 	}
-	service := &Service{cfg: &config.Config{}, coreManager: manager}
+	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
 	reg := GlobalModelRegistry()
 	t.Cleanup(func() { reg.UnregisterClient(id) })
-	service.registerModelsForAuth(context.Background(), auth)
+	original := pluginHostModelsForProvider
+	pluginHostModelsForProvider = func(_ *pluginhost.Host, _ string) []*ModelInfo {
+		return []*ModelInfo{{ID: "restricted"}}
+	}
+	t.Cleanup(func() { pluginHostModelsForProvider = original })
 	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
 		return map[string]struct{}{"restricted": {}}
 	}
+	service.registerModelsForAuth(context.Background(), auth)
 	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth), fetching: true}
 	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{id: entry}
 	initialEpoch := reg.ClientRegistrationEpoch(id)
@@ -220,6 +225,147 @@ func TestRestrictedModelFetchRetainsLastListAndOnlyReregistersOnGrantChanges(t *
 	fetch([]string{"restricted"}, nil)
 	if got := reg.ClientRegistrationEpoch(id); got != removedEpoch {
 		t.Fatalf("removed credential's stale fetch re-registered: epoch %d != %d", got, removedEpoch)
+	}
+}
+
+func TestRestrictedRevocationFailsClosedAcrossPluginDiscoveryErrors(t *testing.T) {
+	const id = "restricted-plugin-discovery-revocation-test"
+	const restricted = "restricted-plugin-discovery-model"
+	auth := restrictedTestAuth("codex", id)
+	auth.Prefix = "tenant"
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+		return map[string]struct{}{restricted: {}}
+	}
+	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth), listed: map[string]struct{}{restricted: {}}, fetched: true}
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{id: entry}
+	reg := GlobalModelRegistry()
+	t.Cleanup(func() { reg.UnregisterClient(id) })
+	var failing bool
+	var failedCalls int
+	original := pluginHostModelsForAuth
+	pluginHostModelsForAuth = func(_ *pluginhost.Host, _ context.Context, _ *coreauth.Auth) pluginhost.AuthModelResult {
+		if failing {
+			failedCalls++
+			return pluginhost.AuthModelResult{Handled: true, Err: errors.New("plugin discovery unavailable")}
+		}
+		return pluginhost.AuthModelResult{Handled: true, Models: []*ModelInfo{{ID: restricted}, {ID: "ordinary-plugin-model"}}}
+	}
+	t.Cleanup(func() { pluginHostModelsForAuth = original })
+	service.registerModelsForAuth(context.Background(), auth)
+	if !containsModelID(reg.GetModelsForClient(id), "tenant/"+restricted) {
+		t.Fatal("fixture did not register the prefixed restricted model")
+	}
+
+	fetchDenied := func() {
+		t.Helper()
+		service.fetchRestrictedModels(context.Background(), auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
+			return []string{"ordinary-plugin-model"}, nil
+		}), entry)
+	}
+	failing = true
+	fetchDenied()
+	if failedCalls != 2 {
+		t.Fatalf("plugin discovery failed %d times, want both refresh passes", failedCalls)
+	}
+	if models := reg.GetModelsForClient(id); len(models) != 0 {
+		t.Fatalf("plugin failure preserved a revoked registration: %v", modelIDs(models))
+	}
+	if !entry.pending.Load() {
+		t.Fatal("failed refresh was incorrectly marked reconciled")
+	}
+	failing = false
+	fetchDenied() // Identical denial must retry the failed reconciliation.
+	if containsModelID(reg.GetModelsForClient(id), restricted) || containsModelID(reg.GetModelsForClient(id), "tenant/"+restricted) {
+		t.Fatal("plugin recovery restored the revoked restricted model")
+	}
+	if !containsModelID(reg.GetModelsForClient(id), "ordinary-plugin-model") || entry.pending.Load() {
+		t.Fatal("plugin recovery failed to restore ordinary models and clear pending reconciliation")
+	}
+	epoch := reg.ClientRegistrationEpoch(id)
+	fetchDenied()
+	if got := reg.ClientRegistrationEpoch(id); got != epoch {
+		t.Fatalf("reconciled denial re-registered: %d != %d", got, epoch)
+	}
+}
+
+func TestRestrictedModelFetchRepairsRegistryDrift(t *testing.T) {
+	const id = "restricted-registration-drift-test"
+	const restricted = "restricted-drift-model"
+	auth := restrictedTestAuth("codex", id)
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+		return map[string]struct{}{restricted: {}}
+	}
+	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth), listed: map[string]struct{}{restricted: {}}, fetched: true}
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{id: entry}
+	reg := GlobalModelRegistry()
+	t.Cleanup(func() { reg.UnregisterClient(id) })
+	original := pluginHostModelsForProvider
+	pluginHostModelsForProvider = func(_ *pluginhost.Host, _ string) []*ModelInfo {
+		return []*ModelInfo{{ID: restricted}}
+	}
+	t.Cleanup(func() { pluginHostModelsForProvider = original })
+	service.registerModelsForAuth(context.Background(), auth)
+	if !containsModelID(reg.GetModelsForClient(id), restricted) {
+		t.Fatal("fixture did not register granted model")
+	}
+	fetch := func(ids []string) {
+		t.Helper()
+		service.fetchRestrictedModels(context.Background(), auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
+			return ids, nil
+		}), entry)
+	}
+	reg.RegisterClient(id, "codex", []*ModelInfo{{ID: "ordinary"}}) // Drift: grant remains, registration lost it.
+	before := reg.ClientRegistrationEpoch(id)
+	fetch([]string{restricted})
+	if !containsModelID(reg.GetModelsForClient(id), restricted) || reg.ClientRegistrationEpoch(id) <= before {
+		t.Fatal("identical grant did not restore a missing restricted model")
+	}
+	fetch(nil)
+	reg.RegisterClient(id, "codex", []*ModelInfo{{ID: "alias-for-restricted", MetadataModelID: restricted}}) // Drift: denied alias appears.
+	before = reg.ClientRegistrationEpoch(id)
+	fetch(nil)
+	if containsModelID(reg.GetModelsForClient(id), "alias-for-restricted") || reg.ClientRegistrationEpoch(id) <= before {
+		t.Fatal("identical denial did not remove a stale restricted alias")
+	}
+}
+
+func TestRestrictedExcludedGrantDoesNotReregisterOnUnchangedFetch(t *testing.T) {
+	const id = "restricted-excluded-grant-test"
+	restricted := registry.GetCodexProModels()[0].ID
+	auth := restrictedTestAuth("codex", id)
+	auth.Attributes["excluded_models"] = restricted
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: &config.Config{}, coreManager: manager}
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+		return map[string]struct{}{restricted: {}}
+	}
+	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth), listed: map[string]struct{}{restricted: {}}, fetched: true}
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{id: entry}
+	reg := GlobalModelRegistry()
+	t.Cleanup(func() { reg.UnregisterClient(id) })
+	service.registerModelsForAuth(context.Background(), auth)
+	if containsModelID(reg.GetModelsForClient(id), restricted) {
+		t.Fatal("fixture registered a configured exclusion")
+	}
+	epoch := reg.ClientRegistrationEpoch(id)
+	service.fetchRestrictedModels(context.Background(), auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
+		return []string{restricted}, nil
+	}), entry)
+	if got := reg.ClientRegistrationEpoch(id); got != epoch {
+		t.Fatalf("unchanged, excluded grant re-registered: %d != %d", got, epoch)
 	}
 }
 
