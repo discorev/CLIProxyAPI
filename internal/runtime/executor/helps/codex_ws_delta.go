@@ -158,13 +158,19 @@ var codexWSServerItemTypes = map[string]struct{}{
 //     codexWSServerItemTypes; a reasoning item keeps its id when it has no
 //     encrypted_content, because the id is then the only reference to it;
 //   - empty annotations and logprobs arrays on output_text parts of a message;
+//   - the phase of a message ("commentary", "final_answer"), which Claude and
+//     Chat Completions clients have nowhere to keep;
 //   - a null or empty content on a reasoning item, which some translators add
 //     to the encrypted reasoning they replay ("content": null) and the server
-//     omits.
+//     omits;
+//   - the summary of a reasoning item that carries encrypted_content: the
+//     summary is a display rendering of the encrypted reasoning, and the
+//     Claude translator replays thinking with an empty summary.
 //
-// Nothing else is touched: an id on any other item type, and an explicit null
-// or empty array inside arguments, tool schemas or any other payload, is
-// content.
+// The delta replays the server's stored items, so the upstream still sees the
+// original phase and summary. Nothing else is touched: an id on any other item
+// type, and an explicit null or empty array inside arguments, tool schemas or
+// any other payload, is content.
 func normalizeCodexWSItem(value any) {
 	item, ok := value.(map[string]any)
 	if !ok {
@@ -174,7 +180,8 @@ func normalizeCodexWSItem(value any) {
 	if _, known := codexWSServerItemTypes[itemType]; !known {
 		return
 	}
-	if _, encrypted := item["encrypted_content"].(string); itemType != "reasoning" || encrypted {
+	_, encrypted := item["encrypted_content"].(string)
+	if itemType != "reasoning" || encrypted {
 		delete(item, "id")
 	}
 	delete(item, "status")
@@ -183,7 +190,11 @@ func normalizeCodexWSItem(value any) {
 		if codexWSEmptyJSON(item["content"]) {
 			delete(item, "content")
 		}
+		if encrypted {
+			delete(item, "summary")
+		}
 	case "message":
+		delete(item, "phase")
 		normalizeCodexWSMessageContent(item)
 	}
 }

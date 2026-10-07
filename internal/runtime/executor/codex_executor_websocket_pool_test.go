@@ -195,7 +195,7 @@ func (f *fakeCodexUpstream) responseEvents(responseID string, turn int, request 
 		arguments := strconv.Quote(fmt.Sprintf(`{"cmd":"ls %d"}`, turn))
 		items = append(items, fmt.Sprintf(`{"id":"fc_%s","type":"function_call","status":"completed","arguments":%s,"call_id":"call_%s","name":"shell"}`, responseID, arguments, responseID))
 	} else {
-		items = append(items, fmt.Sprintf(`{"id":"msg_%s","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"answer %d"}]}`, responseID, turn))
+		items = append(items, fmt.Sprintf(`{"id":"msg_%s","type":"message","status":"completed","role":"assistant","phase":"final_answer","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"answer %d"}]}`, responseID, turn))
 	}
 	var events [][]byte
 	if rateLimits {
@@ -432,7 +432,7 @@ func TestCodexHTTPWebsocketDeltaHitRateBySourceFormat(t *testing.T) {
 		{name: "chat-completions/tools-reasoning", format: "openai", withReasoning: true, toolCalls: true, wantDeltas: 0},
 		{name: "claude/reasoning", format: "claude", withReasoning: true, wantDeltas: 2},
 		{name: "claude/reasoning-thinking-enabled", format: "claude", withReasoning: true, thinking: `{"type":"enabled","budget_tokens":4096}`, wantDeltas: 2},
-		{name: "claude/reasoning-summary", format: "claude", withReasoning: true, thinking: `{"type":"enabled","budget_tokens":4096,"display":"summarized"}`, wantDeltas: 0},
+		{name: "claude/reasoning-summary", format: "claude", withReasoning: true, thinking: `{"type":"enabled","budget_tokens":4096,"display":"summarized"}`, wantDeltas: 2},
 		{name: "claude/plain", format: "claude", wantDeltas: 2},
 		{name: "claude/tools", format: "claude", withReasoning: true, toolCalls: true, wantDeltas: 2},
 	}

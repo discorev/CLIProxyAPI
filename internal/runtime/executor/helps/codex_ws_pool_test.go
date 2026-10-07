@@ -18,12 +18,13 @@ import (
 const codexWSTestBaseBody = `{"model":"gpt-5.4","instructions":"be brief","tools":[{"type":"function","name":"shell"}],"reasoning":{"effort":"medium"},"store":false,"stream":true,"prompt_cache_key":"conv","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"q1"}]}]}`
 
 var codexWSTestOutput = [][]byte{
-	[]byte(`{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"enc-1"}`),
-	[]byte(`{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"answer"}]}`),
+	[]byte(`{"id":"rs_1","type":"reasoning","content":[],"summary":[{"type":"summary_text","text":"thinking"}],"encrypted_content":"enc-1"}`),
+	[]byte(`{"id":"msg_1","type":"message","status":"completed","role":"assistant","phase":"final_answer","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"answer"}]}`),
 }
 
-// codexWSTestNextBody echoes the output the way the Codex CLI does (no ids,
-// status or empty arrays) and appends a new user message.
+// codexWSTestNextBody echoes the output the way the Claude translator does (no
+// ids, status, phase, summary text or empty arrays) and appends a new user
+// message.
 func codexWSTestNextBody(t *testing.T, base string, mutate func(string) string) []byte {
 	t.Helper()
 	echo := `{"type":"reasoning","summary":[],"encrypted_content":"enc-1"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}`
@@ -45,7 +46,7 @@ func TestCodexWSIncrementalItems(t *testing.T) {
 		mutate func(string) string
 		want   bool
 	}{
-		{name: "codex cli echo plus new item", want: true},
+		{name: "translated echo plus new item", want: true},
 		{name: "client metadata and stream options do not matter", want: true, mutate: func(body string) string {
 			return strings.Replace(body, `"store":false`, `"store":false,"client_metadata":{"x-codex-turn-metadata":"t2"},"stream_options":{"include_obfuscation":false},"type":"response.create"`, 1)
 		}},
@@ -328,6 +329,21 @@ func TestCodexWSItemDigestNormalizesOnlyKnownMetadata(t *testing.T) {
 			b:    `{"type":"reasoning","summary":[],"content":null,"encrypted_content":"enc"}`,
 		},
 		{
+			name: "phase on message",
+			a:    `{"id":"msg_1","type":"message","status":"completed","role":"assistant","phase":"commentary","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"hi"}]}`,
+			b:    `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}`,
+		},
+		{
+			name: "summary text on encrypted reasoning",
+			a:    `{"id":"rs_1","type":"reasoning","content":[],"summary":[{"type":"summary_text","text":"Planning the change"}],"encrypted_content":"enc"}`,
+			b:    `{"type":"reasoning","summary":[],"content":null,"encrypted_content":"enc"}`,
+		},
+		{
+			name: "summary dropped from encrypted reasoning",
+			a:    `{"type":"reasoning","summary":[],"encrypted_content":"enc"}`,
+			b:    `{"type":"reasoning","encrypted_content":"enc"}`,
+		},
+		{
 			name: "key order",
 			a:    `{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]}`,
 			b:    `{"content":[{"text":"q","type":"input_text"}],"role":"user","type":"message"}`,
@@ -406,9 +422,19 @@ func TestCodexWSItemDigestNormalizesOnlyKnownMetadata(t *testing.T) {
 			b:    `{"type":"reasoning","id":"rs_B","summary":[]}`,
 		},
 		{
-			name: "reasoning summary dropped",
-			a:    `{"type":"reasoning","summary":[],"encrypted_content":"enc"}`,
-			b:    `{"type":"reasoning","encrypted_content":"enc"}`,
+			name: "summary on reasoning without encrypted content",
+			a:    `{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"a"}]}`,
+			b:    `{"type":"reasoning","id":"rs_1","summary":[]}`,
+		},
+		{
+			name: "encrypted reasoning content",
+			a:    `{"type":"reasoning","summary":[],"encrypted_content":"enc-A"}`,
+			b:    `{"type":"reasoning","summary":[],"encrypted_content":"enc-B"}`,
+		},
+		{
+			name: "phase on a non-message item",
+			a:    `{"type":"function_call","call_id":"c1","name":"shell","arguments":"{}","phase":"commentary"}`,
+			b:    `{"type":"function_call","call_id":"c1","name":"shell","arguments":"{}"}`,
 		},
 	}
 	for _, tt := range different {
