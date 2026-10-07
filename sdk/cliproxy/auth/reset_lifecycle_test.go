@@ -12,7 +12,7 @@ import (
 
 func TestResetPreSendUsesCurrentCredential(t *testing.T) {
 	for _, provider := range []string{"claude", "codex"} {
-		for _, rule := range []string{"manual", "exhausted"} {
+		for _, rule := range []string{"manual", "all_exhausted"} {
 			for _, change := range []string{"token", "removed", "disabled", "status_disabled", "identity", "provider", "readded"} {
 				t.Run(provider+"/"+rule+"/"+change, func(t *testing.T) {
 					manager, executor, _ := setupResetManager(t, provider)
@@ -117,7 +117,7 @@ func TestResetLateCompletionCannotAffectReplacement(t *testing.T) {
 						}
 						go func() {
 							defer manager.releaseReset(oldState)
-							_, _, _ = manager.executeReset(context.Background(), reserved, applier, oldState, inventory, resetChoice{rule: "exhausted"})
+							_, _, _ = manager.executeReset(context.Background(), reserved, applier, oldState, inventory, resetChoice{rule: "all_exhausted"})
 						}()
 						synctest.Wait()
 						switch change {

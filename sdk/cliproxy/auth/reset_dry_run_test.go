@@ -31,7 +31,7 @@ func TestResetDryRunRules(t *testing.T) {
 			used             float64
 			recovery, expiry time.Duration
 		}{
-			{"codex", "exhausted", 100, 5 * time.Hour, 2 * time.Hour},
+			{"codex", "all_exhausted", 100, 5 * time.Hour, 2 * time.Hour},
 			{"codex", "last_chance", 0, 5 * time.Hour, 15 * time.Minute},
 			{"claude", "all_exhausted", 100, 5 * time.Hour, 0},
 			{"claude", "expiring_exhausted", 100, 5 * time.Hour, 2 * time.Hour},
@@ -193,6 +193,36 @@ func TestResetDryRunSelection(t *testing.T) {
 	})
 }
 
+func TestResetDryRunCodexAllExhaustedSelection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		hook := setupTestLoggerHook(t)
+		log.SetLevel(log.InfoLevel)
+		manager, executor, _ := setupResetManager(t, "codex")
+		manager.SetConfig(&config.Config{ResetCredits: config.ResetCreditsConfig{DryRun: true}})
+		seedResetAuth(t, manager, "a", "codex", resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour))
+		seedResetAuth(t, manager, "b", "codex", resetTestEntry("codex", 40, 8*time.Hour, 2*time.Hour))
+		manager.StartResetLoop()
+		synctest.Wait()
+		if decisions := resetDecisionLogs(hook); len(decisions) != 0 {
+			t.Fatalf("spent with capacity elsewhere: %+v", decisions)
+		}
+		// Once b is exhausted too, only the soonest-expiring credit is chosen.
+		seedResetAuth(t, manager, "b", "codex", resetTestEntry("codex", 100, 8*time.Hour, time.Hour))
+		manager.sweepResets(context.Background())
+		synctest.Wait()
+		decisions := resetDecisionLogs(hook)
+		if len(decisions) != 1 || decisions[0].Data["auth_id"] != "b" || decisions[0].Data["rule"] != "all_exhausted" ||
+			decisions[0].Data["reason"] != "all enabled accounts of this provider exhausted; recovery more than one hour away" {
+			t.Fatalf("all_exhausted selection=%+v", decisions)
+		}
+		if executor.calls.Load() != 0 {
+			t.Fatal("dry-run spent a credit")
+		}
+		manager.StopResetLoop()
+		synctest.Wait()
+	})
+}
+
 func TestResetDryRunFetchCooldown(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		hook := setupTestLoggerHook(t)
@@ -273,7 +303,7 @@ func TestResetDryRunReloadGuards(t *testing.T) {
 	manager.SetConfig(&config.Config{ResetCredits: config.ResetCreditsConfig{AutoApply: true, DryRun: true}})
 	manager.StartResetLoop()
 	manager.StartResetLoop()
-	choice := codexResetChoice(inventory, clock.now(), nil)
+	choice := codexResetChoice(inventory, clock.now(), true, nil)
 	result, _, err := manager.executeReset(context.Background(), auth, applier, state, inventory, *choice)
 	manager.releaseReset(state)
 	if !errors.Is(err, ErrResetUnavailable) || !result.NotSent || executor.calls.Load() != 0 || !state.attempted.IsZero() || !state.retryAt.IsZero() {
@@ -350,7 +380,7 @@ func TestResetProvidersReloadGuards(t *testing.T) {
 	}
 	// A reload that drops codex from the list must stop the queued reset.
 	manager.SetConfig(&config.Config{ResetCredits: config.ResetCreditsConfig{AutoApply: true, Providers: []string{"claude"}}})
-	choice := codexResetChoice(inventory, clock.now(), nil)
+	choice := codexResetChoice(inventory, clock.now(), true, nil)
 	result, _, err := manager.executeReset(context.Background(), auth, applier, state, inventory, *choice)
 	manager.releaseReset(state)
 	if !errors.Is(err, ErrResetUnavailable) || !result.NotSent || executor.calls.Load() != 0 || !state.attempted.IsZero() || !state.retryAt.IsZero() {

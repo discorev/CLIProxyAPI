@@ -230,6 +230,10 @@ func (e *ClaudeExecutor) FetchUsage(ctx context.Context, auth *cliproxyauth.Auth
 	return helps.FetchClaudeUsage(ctx, auth, e.HttpRequest)
 }
 
+func (e *ClaudeExecutor) ListUpstreamModels(ctx context.Context, auth *cliproxyauth.Auth) ([]string, error) {
+	return helps.FetchClaudeModelList(ctx, auth, e.HttpRequest)
+}
+
 func (e *ClaudeExecutor) ApplyReset(ctx context.Context, auth *cliproxyauth.Auth, request cliproxyauth.ResetRequest) (cliproxyauth.ResetResult, error) {
 	return helps.ApplyClaudeReset(ctx, auth, request, e.resetBaseURL, helps.ResetHTTPTransport(e.cfg, e.PrepareRequest))
 }

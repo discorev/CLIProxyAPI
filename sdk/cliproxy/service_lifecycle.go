@@ -50,6 +50,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}()
 
 	usage.StartDefault(ctx)
+	s.startRestrictedModelRefresh(ctx)
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	if homeEnabled {
 		forceHomeRuntimeConfig(s.cfg)

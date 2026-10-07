@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -371,54 +372,203 @@ func TestResetInventorySnapshotsAreIndependent(t *testing.T) {
 	}
 }
 
-func TestResetLoopAllExhaustedRequiresEveryClaudeFetch(t *testing.T) {
-	for _, scenario := range []string{"never fetched", "first fetch in flight", "empty windows", "failed fetch", "refresh due", "fable only", "all exhausted", "ancillary failure"} {
-		t.Run(scenario, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				manager, executor, clock := setupResetManager(t, "claude")
-				seedResetAuth(t, manager, "a", "claude", resetTestEntry("claude", 100, 5*time.Hour, 0))
-				registerUsageAuth(t, manager, "b", "claude")
-				inventory := resetTestEntry("claude", 100, 3*time.Hour, 0)
-				release := make(chan struct{})
-				executor.fetch = func(_ context.Context, auth *Auth) (UsageFetchResult, error) {
-					if auth.ID == "b" && (scenario == "never fetched" || scenario == "first fetch in flight") {
-						<-release
+func TestResetLoopAllExhaustedRequiresEveryAccountFetch(t *testing.T) {
+	scenarios := []string{"never fetched", "first fetch in flight", "empty windows", "failed fetch", "refresh due", "fable only", "capacity", "all exhausted", "ancillary failure"}
+	for _, provider := range []string{"claude", "codex"} {
+		// Codex credits always carry an expiry; keep it beyond both recoveries.
+		expiry := map[string]time.Duration{"claude": 0, "codex": 24 * time.Hour}[provider]
+		for _, scenario := range scenarios {
+			t.Run(provider+"/"+scenario, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					manager, executor, clock := setupResetManager(t, provider)
+					seedResetAuth(t, manager, "a", provider, resetTestEntry(provider, 100, 5*time.Hour, expiry))
+					registerUsageAuth(t, manager, "b", provider)
+					inventory := resetTestEntry(provider, 100, 3*time.Hour, expiry)
+					release := make(chan struct{})
+					executor.fetch = func(_ context.Context, auth *Auth) (UsageFetchResult, error) {
+						if auth.ID == "b" && (scenario == "never fetched" || scenario == "first fetch in flight") {
+							<-release
+						}
+						clock.advance(time.Nanosecond)
+						return UsageFetchResult{Resets: inventory.Resets, Windows: inventory.Windows}, nil
 					}
-					clock.advance(time.Nanosecond)
-					return UsageFetchResult{Resets: inventory.Resets, Windows: inventory.Windows}, nil
-				}
-				if scenario == "first fetch in flight" {
-					go func() { _, _ = manager.RefreshUsage(context.Background(), "b") }()
+					if scenario == "first fetch in flight" {
+						go func() { _, _ = manager.RefreshUsage(context.Background(), "b") }()
+						synctest.Wait()
+					} else if scenario != "never fetched" {
+						switch scenario {
+						case "empty windows":
+							inventory.Windows = nil
+						case "failed fetch":
+							inventory.Resets = nil
+							inventory.LastError = "usage failed"
+						case "refresh due":
+							inventory.FetchedAt = clock.now().Add(-time.Hour)
+						case "fable only":
+							inventory.Windows[0].Scope = "fable"
+						case "capacity":
+							inventory.Windows[0].UsedPercent = 40
+						case "ancillary failure":
+							inventory.LastError = "profile failed"
+						}
+						manager.usage.entries["b"] = &usageEntry{CredentialUsage: inventory}
+					}
+					manager.StartResetLoop()
 					synctest.Wait()
-				} else if scenario != "never fetched" {
-					switch scenario {
-					case "empty windows":
-						inventory.Windows = nil
-					case "failed fetch":
-						inventory.Resets = nil
-						inventory.LastError = "usage failed"
-					case "refresh due":
-						inventory.FetchedAt = clock.now().Add(-time.Hour)
-					case "fable only":
-						inventory.Windows[0].Scope = "fable"
-					case "ancillary failure":
-						inventory.LastError = "profile failed"
+					want := int32(0)
+					if scenario == "all exhausted" || scenario == "ancillary failure" {
+						want = 1
 					}
-					manager.usage.entries["b"] = &usageEntry{CredentialUsage: inventory}
-				}
+					if executor.calls.Load() != want {
+						t.Fatalf("claims=%d want=%d", executor.calls.Load(), want)
+					}
+					close(release)
+					manager.StopResetLoop()
+					synctest.Wait()
+				})
+			})
+		}
+	}
+}
+
+// resetSpec describes one seeded account: usage, natural recovery and the
+// expiry of its only reset (zero means a Claude grant without an expiry).
+type resetSpec struct {
+	used             float64
+	recovery, expiry time.Duration
+}
+
+func TestResetLoopAllExhaustedSelection(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		claudeOnly bool // Codex credits always carry an expiry
+		a, b       resetSpec
+		disabledB  bool
+		want       string
+	}{
+		{"capacity elsewhere", false, resetSpec{100, 5 * time.Hour, 24 * time.Hour}, resetSpec{40, 6 * time.Hour, 24 * time.Hour}, false, ""},
+		{"disabled capacity ignored", false, resetSpec{100, 5 * time.Hour, 24 * time.Hour}, resetSpec{0, 6 * time.Hour, 24 * time.Hour}, true, "a"},
+		{"soonest expiring reset first", false, resetSpec{100, 8 * time.Hour, 30 * time.Hour}, resetSpec{100, 5 * time.Hour, 20 * time.Hour}, false, "b"},
+		{"equal expiry furthest recovery", false, resetSpec{100, 5 * time.Hour, 24 * time.Hour}, resetSpec{100, 8 * time.Hour, 24 * time.Hour}, false, "b"},
+		{"equal expiry and recovery by auth ID", false, resetSpec{100, 5 * time.Hour, 24 * time.Hour}, resetSpec{100, 5 * time.Hour, 24 * time.Hour}, false, "a"},
+		{"recovery within an hour not a candidate", false, resetSpec{100, 5 * time.Hour, 30 * time.Hour}, resetSpec{100, 30 * time.Minute, 20 * time.Hour}, false, "a"},
+		{"no expiry sorts last", true, resetSpec{100, 8 * time.Hour, 0}, resetSpec{100, 5 * time.Hour, 24 * time.Hour}, false, "b"},
+		{"no expiry on both furthest recovery", true, resetSpec{100, 5 * time.Hour, 0}, resetSpec{100, 8 * time.Hour, 0}, false, "b"},
+	} {
+		for _, provider := range []string{"claude", "codex"} {
+			if tt.claudeOnly && provider == "codex" {
+				continue
+			}
+			t.Run(provider+"/"+tt.name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					manager, executor, _ := setupResetManager(t, provider)
+					seedResetAuth(t, manager, "a", provider, resetTestEntry(provider, tt.a.used, tt.a.recovery, tt.a.expiry))
+					second := seedResetAuth(t, manager, "b", provider, resetTestEntry(provider, tt.b.used, tt.b.recovery, tt.b.expiry))
+					if tt.disabledB {
+						second.Disabled = true
+						if _, err := manager.Update(context.Background(), second); err != nil {
+							t.Fatal(err)
+						}
+					}
+					manager.StartResetLoop()
+					synctest.Wait()
+					// The spent account refreshes with headroom, so a later tick
+					// must not spend another account's reset.
+					manager.sweepResets(context.Background())
+					synctest.Wait()
+					wantCalls := int32(0)
+					if tt.want != "" {
+						wantCalls = 1
+					}
+					if executor.calls.Load() != wantCalls {
+						t.Fatalf("calls=%d want=%d", executor.calls.Load(), wantCalls)
+					}
+					if tt.want != "" {
+						if got := <-executor.ids; got != tt.want {
+							t.Fatalf("claimed %s, want %s", got, tt.want)
+						}
+					}
+					manager.StopResetLoop()
+					synctest.Wait()
+				})
+			})
+		}
+	}
+}
+
+func TestResetLoopCodexLastChanceIndependentOfAllExhaustedClaim(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		used    float64
+		want    []string
+		wantAll string
+	}{
+		// Last-chance credits are spent per account even with capacity elsewhere.
+		{"capacity elsewhere", 9, []string{"a", "b"}, ""},
+		// With every account exhausted, one all_exhausted claim joins them: d's
+		// credit expires before c's.
+		{"all exhausted", 100, []string{"a", "b", "d"}, "d"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				hook := setupTestLoggerHook(t)
+				log.SetLevel(log.InfoLevel)
+				manager, executor, _ := setupResetManager(t, "codex")
+				seedResetAuth(t, manager, "a", "codex", resetTestEntry("codex", tt.used, 5*time.Hour, 10*time.Minute))
+				seedResetAuth(t, manager, "b", "codex", resetTestEntry("codex", tt.used, 5*time.Hour, 12*time.Minute))
+				seedResetAuth(t, manager, "c", "codex", resetTestEntry("codex", 100, 8*time.Hour, 24*time.Hour))
+				seedResetAuth(t, manager, "d", "codex", resetTestEntry("codex", 100, 5*time.Hour, 20*time.Hour))
 				manager.StartResetLoop()
 				synctest.Wait()
-				want := int32(0)
-				if scenario == "all exhausted" || scenario == "ancillary failure" {
-					want = 1
+				if int(executor.calls.Load()) != len(tt.want) {
+					t.Fatalf("calls=%d want=%v", executor.calls.Load(), tt.want)
 				}
-				if executor.calls.Load() != want {
-					t.Fatalf("claims=%d want=%d", executor.calls.Load(), want)
+				var got []string
+				for range tt.want {
+					got = append(got, <-executor.ids)
 				}
-				close(release)
+				slices.Sort(got)
+				if !slices.Equal(got, tt.want) {
+					t.Fatalf("claimed %v, want %v", got, tt.want)
+				}
+				var allExhausted []string
+				for _, entry := range hook.AllEntries() {
+					if entry.Message == "subscription reset attempt" && entry.Data["rule"] == "all_exhausted" {
+						allExhausted = append(allExhausted, entry.Data["auth_id"].(string))
+					}
+				}
+				if tt.wantAll == "" && len(allExhausted) != 0 || tt.wantAll != "" && !slices.Equal(allExhausted, []string{tt.wantAll}) {
+					t.Fatalf("all_exhausted claims=%v want %q", allExhausted, tt.wantAll)
+				}
 				manager.StopResetLoop()
 				synctest.Wait()
 			})
+		})
+	}
+}
+
+func TestResetCandidateOrdering(t *testing.T) {
+	at := func(d time.Duration) time.Time { return resetTestNow.Add(d) }
+	candidate := func(id, rule string, expires time.Time, recovery time.Duration) resetCandidate {
+		return resetCandidate{auth: &Auth{ID: id}, choice: resetChoice{rule: rule, expires: expires}, recovery: at(recovery)}
+	}
+	for _, tt := range []struct {
+		name        string
+		first, then resetCandidate
+	}{
+		{"urgent before all exhausted", candidate("b", "last_chance", at(10*time.Minute), time.Hour), candidate("a", "all_exhausted", at(5*time.Minute), 9*time.Hour)},
+		{"expiring exhausted before all exhausted", candidate("b", "expiring_exhausted", at(3*time.Hour), 4*time.Hour), candidate("a", "all_exhausted", at(time.Hour), 9*time.Hour)},
+		{"urgent soonest expiry", candidate("b", "last_chance", at(5*time.Minute), time.Hour), candidate("a", "expiring_exhausted", at(10*time.Minute), 9*time.Hour)},
+		{"all exhausted soonest expiry", candidate("b", "all_exhausted", at(2*time.Hour), 2*time.Hour), candidate("a", "all_exhausted", at(3*time.Hour), 9*time.Hour)},
+		{"all exhausted no expiry last", candidate("b", "all_exhausted", at(30*time.Hour), 2*time.Hour), candidate("a", "all_exhausted", time.Time{}, 9*time.Hour)},
+		{"equal expiry furthest recovery", candidate("b", "all_exhausted", at(3*time.Hour), 9*time.Hour), candidate("a", "all_exhausted", at(3*time.Hour), 2*time.Hour)},
+		{"no expiry furthest recovery", candidate("b", "all_exhausted", time.Time{}, 9*time.Hour), candidate("a", "all_exhausted", time.Time{}, 2*time.Hour)},
+		{"full tie by auth ID", candidate("a", "all_exhausted", at(3*time.Hour), 9*time.Hour), candidate("b", "all_exhausted", at(3*time.Hour), 9*time.Hour)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if !resetCandidateBefore(tt.first, tt.then) || resetCandidateBefore(tt.then, tt.first) {
+				t.Fatalf("%s should order before %s", tt.first.auth.ID, tt.then.auth.ID)
+			}
 		})
 	}
 }
@@ -654,7 +804,7 @@ func TestResetLoopCodexLastChanceTriedOncePerCredit(t *testing.T) {
 		if len(rules) != 1 {
 			t.Fatalf("refusal logs=%v", rules)
 		}
-		// The exhausted rule may still spend the remembered credit.
+		// Once every account is exhausted, all_exhausted may still spend the remembered credit.
 		manager.usage.mu.Lock()
 		exhausted := cloneCredentialUsage(inventory)
 		exhausted.Windows[0].UsedPercent = 100
@@ -664,7 +814,7 @@ func TestResetLoopCodexLastChanceTriedOncePerCredit(t *testing.T) {
 		manager.sweepResets(context.Background())
 		synctest.Wait()
 		if executor.calls.Load() != 2 {
-			t.Fatalf("exhausted rule blocked by last_chance refusal: calls=%d", executor.calls.Load())
+			t.Fatalf("all_exhausted rule blocked by last_chance refusal: calls=%d", executor.calls.Load())
 		}
 		clock.advance(15 * time.Minute)
 		manager.sweepResets(context.Background())

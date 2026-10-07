@@ -252,7 +252,7 @@ func modelSectionChanged(a, b []*ModelInfo) bool {
 	}
 	for i := range a {
 		if a[i] != nil && b[i] != nil {
-			if !reflect.DeepEqual(a[i].NativeCapabilities, b[i].NativeCapabilities) || a[i].SupportConfigurationUpdate != b[i].SupportConfigurationUpdate {
+			if !reflect.DeepEqual(a[i].NativeCapabilities, b[i].NativeCapabilities) || a[i].SupportConfigurationUpdate != b[i].SupportConfigurationUpdate || a[i].RestrictedAccess != b[i].RestrictedAccess {
 				return true
 			}
 		}

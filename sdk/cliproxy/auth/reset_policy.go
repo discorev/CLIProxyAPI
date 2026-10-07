@@ -122,22 +122,27 @@ func grantResetChoice(grant *ResetGrant, rule string) *resetChoice {
 	return choice
 }
 
-// codexResetChoice spends the soonest credit when it would expire before an
-// exhausted account recovers. Otherwise last_chance spends the soonest credit
-// within 15 minutes of expiry, skipping credits whose last_chance attempt was
-// already refused (refused may be nil). Refusals never block the exhausted rule.
-func codexResetChoice(entry CredentialUsage, now time.Time, refused func(creditID string) bool) *resetChoice {
-	credit := soonestResetCredit(entry.Resets, now)
-	if credit == nil {
+// codexResetChoice has two rules. last_chance spends the soonest credit within
+// 15 minutes of expiry, skipping credits whose last_chance attempt was already
+// refused (refused may be nil). all_exhausted spends the soonest credit only
+// when every enabled Codex account is exhausted (allExhausted) and this
+// account's natural recovery is more than an hour away; refusals never block
+// it. A Codex reset restarts the weekly window, so spending while another
+// account has capacity makes intelligent-fill rank this account last and its
+// fresh window runs down unused. Upstream refuses a credit unless its own
+// account is limited, so waiting never loses a credit that last_chance can
+// still spend.
+func codexResetChoice(entry CredentialUsage, now time.Time, allExhausted bool, refused func(creditID string) bool) *resetChoice {
+	credit := soonestResetCreditExcept(entry.Resets, now, refused)
+	if credit != nil && !credit.ExpiresAt.After(now.Add(15*time.Minute)) {
+		return &resetChoice{creditID: credit.ID, expires: credit.ExpiresAt, rule: "last_chance"}
+	}
+	if !allExhausted {
 		return nil
 	}
 	_, recovery := exhaustedResetWindows(entry, now)
-	if !recovery.IsZero() && credit.ExpiresAt.Before(recovery) {
-		return &resetChoice{creditID: credit.ID, expires: credit.ExpiresAt, rule: "exhausted"}
-	}
-	credit = soonestResetCreditExcept(entry.Resets, now, refused)
-	if credit != nil && !credit.ExpiresAt.After(now.Add(15*time.Minute)) {
-		return &resetChoice{creditID: credit.ID, expires: credit.ExpiresAt, rule: "last_chance"}
+	if credit = soonestResetCredit(entry.Resets, now); credit != nil && recovery.After(now.Add(time.Hour)) {
+		return &resetChoice{creditID: credit.ID, expires: credit.ExpiresAt, rule: "all_exhausted"}
 	}
 	return nil
 }
