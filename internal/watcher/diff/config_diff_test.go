@@ -28,6 +28,23 @@ func TestBuildConfigChangeDetailsClientCodexEnableApplyPatch(t *testing.T) {
 	}
 }
 
+func TestBuildConfigChangeDetailsCodexHTTPWebsocketPool(t *testing.T) {
+	oldCfg, newCfg := &config.Config{}, &config.Config{}
+	disabled := false
+	newCfg.Codex.HTTPWebsocketPool = config.CodexHTTPWebsocketPoolConfig{Enabled: &disabled, IdleTimeout: "5m", MaxSockets: 10, MaxSocketsPerAuth: 2}
+	changes := strings.Join(BuildConfigChangeDetails(oldCfg, newCfg), "\n")
+	for _, want := range []string{
+		"codex.http-websocket-pool.enabled: true -> false",
+		"codex.http-websocket-pool.idle-timeout:  -> 5m",
+		"codex.http-websocket-pool.max-sockets: 0 -> 10",
+		"codex.http-websocket-pool.max-sockets-per-auth: 0 -> 2",
+	} {
+		if !strings.Contains(changes, want) {
+			t.Fatalf("changes = %q, missing %q", changes, want)
+		}
+	}
+}
+
 func TestBuildConfigChangeDetailsClientCodexOptimizeMultiAgentV2(t *testing.T) {
 	oldCfg, newCfg := &config.Config{}, &config.Config{}
 	newCfg.Client.Codex.OptimizeMultiAgentV2 = true

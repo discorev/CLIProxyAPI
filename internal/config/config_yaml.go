@@ -377,8 +377,9 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 		return false
 	}
 
-	// Pointer-backed booleans (such as cache-user-id and disable-cooling): explicit false is meaningful and must be preserved.
-	if len(path) > 0 && (path[len(path)-1] == "cache-user-id" || path[len(path)-1] == "disable-cooling") && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
+	// Pointer-backed booleans (such as cache-user-id and disable-cooling): explicit false is meaningful and must be preserved,
+	// together with the mappings that lead to it.
+	if containsExplicitPointerBool(path, node) {
 		return false
 	}
 
@@ -404,7 +405,7 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 		case "plugins.dir":
 			return node.Value == "plugins"
 		case "routing.strategy":
-			return node.Value == "round-robin"
+			return node.Value == "intelligent-fill"
 		}
 	}
 
@@ -455,6 +456,49 @@ func pruneKnownDefaultsInNewNode(path []string, node *yaml.Node) {
 			pruneKnownDefaultsInNewNode(path, child)
 		}
 	}
+}
+
+// isExplicitPointerBoolPath reports whether path names a pointer-backed
+// boolean whose explicit false differs from leaving it unset.
+func isExplicitPointerBoolPath(path []string) bool {
+	if len(path) == 0 {
+		return false
+	}
+	switch path[len(path)-1] {
+	case "cache-user-id", "disable-cooling":
+		return true
+	case "enabled":
+		// codex.http-websocket-pool.enabled defaults to true: false is an opt-out.
+		return len(path) >= 2 && path[len(path)-2] == "http-websocket-pool"
+	}
+	return false
+}
+
+// containsExplicitPointerBool reports whether node is, or contains, a
+// pointer-backed boolean (see isExplicitPointerBoolPath). A mapping holding
+// only such an explicit false would otherwise look like a zero value and be
+// pruned as a whole, silently dropping the setting.
+func containsExplicitPointerBool(path []string, node *yaml.Node) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Kind {
+	case yaml.ScalarNode:
+		return node.Tag == "!!bool" && isExplicitPointerBoolPath(path)
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i] != nil && containsExplicitPointerBool(appendPath(path, node.Content[i].Value), node.Content[i+1]) {
+				return true
+			}
+		}
+	case yaml.SequenceNode:
+		for _, child := range node.Content {
+			if containsExplicitPointerBool(path, child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isZeroValueNode returns true if the YAML node represents a zero/default value

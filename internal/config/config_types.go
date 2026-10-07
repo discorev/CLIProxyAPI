@@ -217,6 +217,45 @@ type CodexConfig struct {
 	// ResponseSteering enables full-duplex Codex WebSockets, bound to one
 	// upstream model/account/socket for their entire lifetime. Default is false.
 	ResponseSteering bool `yaml:"response-steering" json:"response-steering"`
+	// HTTPWebsocketPool serves plain-HTTP Codex Responses requests over pooled upstream
+	// websockets, so follow-up turns send only new input with previous_response_id.
+	HTTPWebsocketPool CodexHTTPWebsocketPoolConfig `yaml:"http-websocket-pool,omitempty" json:"http-websocket-pool,omitempty"`
+}
+
+// CodexHTTPWebsocketPoolConfig tunes the pool of upstream Codex Responses websockets
+// used for downstream clients that speak plain HTTP (Responses, Chat Completions,
+// Claude Messages routed to Codex models). Credentials with websockets disabled never
+// use it. Zero values select the built-in defaults.
+type CodexHTTPWebsocketPoolConfig struct {
+	// Enabled toggles the pool. Defaults to true.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// IdleTimeout closes sockets idle for longer than this duration. Defaults to "10m".
+	IdleTimeout string `yaml:"idle-timeout,omitempty" json:"idle-timeout,omitempty"`
+	// MaxSockets caps pooled sockets across all credentials. Defaults to 512.
+	MaxSockets int `yaml:"max-sockets,omitempty" json:"max-sockets,omitempty"`
+	// MaxSocketsPerAuth caps pooled sockets per credential. Defaults to 64.
+	MaxSocketsPerAuth int `yaml:"max-sockets-per-auth,omitempty" json:"max-sockets-per-auth,omitempty"`
+}
+
+// IsEnabled reports whether the HTTP websocket pool is enabled (default true).
+func (c CodexHTTPWebsocketPoolConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// IdleTimeoutDuration returns the configured idle timeout, or 0 when unset or
+// invalid so the caller applies its default.
+func (c CodexHTTPWebsocketPoolConfig) IdleTimeoutDuration() time.Duration {
+	raw := strings.TrimSpace(c.IdleTimeout)
+	if raw == "" {
+		return 0
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	if secs, err := strconv.Atoi(raw); err == nil && secs > 0 && int64(secs) <= maxBootstrapTimeoutSeconds {
+		return time.Duration(secs) * time.Second
+	}
+	return 0
 }
 
 // DefaultCodexStreamBootstrapTimeout is the default maximum duration to buffer bootstrap events.
@@ -361,7 +400,7 @@ type ResetCreditsConfig struct {
 // RoutingConfig configures how credentials are selected for requests.
 type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
-	// Supported values: "round-robin" (default), "weighted-round-robin", "fill-first", "intelligent-fill".
+	// Supported values: "intelligent-fill" (default), "round-robin", "weighted-round-robin", "fill-first".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 
 	// SessionAffinity enables universal session-sticky routing for all clients.

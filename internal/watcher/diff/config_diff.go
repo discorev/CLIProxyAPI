@@ -152,6 +152,19 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if strings.TrimSpace(oldCfg.Codex.StreamBootstrapTimeout) != strings.TrimSpace(newCfg.Codex.StreamBootstrapTimeout) {
 		changes = append(changes, fmt.Sprintf("codex.stream-bootstrap-timeout: %s -> %s", strings.TrimSpace(oldCfg.Codex.StreamBootstrapTimeout), strings.TrimSpace(newCfg.Codex.StreamBootstrapTimeout)))
 	}
+	oldPool, newPool := oldCfg.Codex.HTTPWebsocketPool, newCfg.Codex.HTTPWebsocketPool
+	if oldPool.IsEnabled() != newPool.IsEnabled() {
+		changes = append(changes, fmt.Sprintf("codex.http-websocket-pool.enabled: %t -> %t", oldPool.IsEnabled(), newPool.IsEnabled()))
+	}
+	if strings.TrimSpace(oldPool.IdleTimeout) != strings.TrimSpace(newPool.IdleTimeout) {
+		changes = append(changes, fmt.Sprintf("codex.http-websocket-pool.idle-timeout: %s -> %s", strings.TrimSpace(oldPool.IdleTimeout), strings.TrimSpace(newPool.IdleTimeout)))
+	}
+	if oldPool.MaxSockets != newPool.MaxSockets {
+		changes = append(changes, fmt.Sprintf("codex.http-websocket-pool.max-sockets: %d -> %d", oldPool.MaxSockets, newPool.MaxSockets))
+	}
+	if oldPool.MaxSocketsPerAuth != newPool.MaxSocketsPerAuth {
+		changes = append(changes, fmt.Sprintf("codex.http-websocket-pool.max-sockets-per-auth: %d -> %d", oldPool.MaxSocketsPerAuth, newPool.MaxSocketsPerAuth))
+	}
 	if oldCfg.Client.Codex.OptimizeMultiAgentV2 != newCfg.Client.Codex.OptimizeMultiAgentV2 {
 		changes = append(changes, fmt.Sprintf("client.codex.optimize-multi-agent-v2: %t -> %t", oldCfg.Client.Codex.OptimizeMultiAgentV2, newCfg.Client.Codex.OptimizeMultiAgentV2))
 	}

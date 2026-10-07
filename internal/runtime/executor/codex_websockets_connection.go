@@ -29,7 +29,16 @@ const (
 )
 
 func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *cliproxyauth.Auth, wsURL string, headers http.Header) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
-	dialer := newProxyAwareWebsocketDialer(ctx, e.cfg, auth)
+	var cfg *config.Config
+	if e != nil && e.CodexExecutor != nil {
+		cfg = e.cfg
+	}
+	return dialCodexResponsesWebsocket(ctx, cfg, auth, wsURL, headers)
+}
+
+// dialCodexResponsesWebsocket opens one upstream Codex Responses websocket.
+func dialCodexResponsesWebsocket(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, wsURL string, headers http.Header) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
+	dialer := newProxyAwareWebsocketDialer(ctx, cfg, auth)
 	dialer.HandshakeTimeout = codexResponsesWebsocketHandshakeTO
 	dialer.EnableCompression = true
 	if ctx == nil {
@@ -237,8 +246,14 @@ func newProxyAwareWebsocketDialer(ctx context.Context, cfg *config.Config, auth 
 			return dialer
 		}
 		dialer.Proxy = nil
-		dialer.NetDialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
-			return socksDialer.Dial(network, addr)
+		// Negotiate with the request context so cancellation interrupts a proxy
+		// that accepts the connection but stalls the SOCKS handshake.
+		if contextDialer, ok := socksDialer.(proxy.ContextDialer); ok {
+			dialer.NetDialContext = contextDialer.DialContext
+		} else {
+			dialer.NetDialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
+				return socksDialer.Dial(network, addr)
+			}
 		}
 	case "http", "https":
 		dialer.Proxy = http.ProxyURL(setting.URL)

@@ -214,7 +214,7 @@ func (m dashboardModel) renderDashboard(cfg map[string]any, authFiles []map[stri
 		}
 
 		// Routing strategy
-		strategy := "round-robin"
+		strategy := "intelligent-fill"
 		if routing, ok := cfg["routing"].(map[string]any); ok {
 			if s := getString(routing, "strategy"); s != "" {
 				strategy = s
