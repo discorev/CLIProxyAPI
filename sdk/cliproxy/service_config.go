@@ -33,7 +33,7 @@ type routingRuntimeState struct {
 
 func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	state := routingRuntimeState{
-		strategy:                 "round-robin",
+		strategy:                 "intelligent-fill",
 		sessionAffinityTTL:       time.Hour,
 		sessionAffinitySubagents: true,
 	}
@@ -42,10 +42,10 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	}
 
 	switch strings.ToLower(strings.TrimSpace(cfg.Routing.Strategy)) {
+	case "round-robin", "roundrobin", "rr":
+		state.strategy = "round-robin"
 	case "weighted-round-robin", "weightedroundrobin", "wrr":
 		state.strategy = "weighted-round-robin"
-	case "intelligent-fill", "intelligentfill", "if":
-		state.strategy = "intelligent-fill"
 	case "fill-first", "fillfirst", "ff":
 		state.strategy = "fill-first"
 	}
@@ -67,14 +67,14 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 func newRoutingSelector(state routingRuntimeState, manager *coreauth.Manager) coreauth.Selector {
 	var selector coreauth.Selector
 	switch state.strategy {
+	case "round-robin":
+		selector = &coreauth.RoundRobinSelector{}
 	case "weighted-round-robin":
 		selector = &coreauth.WeightedRoundRobinSelector{}
-	case "intelligent-fill":
-		selector = coreauth.NewIntelligentFillSelector(manager)
 	case "fill-first":
 		selector = &coreauth.FillFirstSelector{}
 	default:
-		selector = &coreauth.RoundRobinSelector{}
+		selector = coreauth.NewIntelligentFillSelector(manager)
 	}
 	if state.sessionAffinity {
 		subagents := state.sessionAffinitySubagents
