@@ -454,15 +454,27 @@ func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey st
 	GlobalModelRegistry().RegisterClient(a.ID, providerKey, normalizedModels)
 }
 
+// Overridable in tests to provide plugin models without loading a shared library.
+var pluginHostModelsForProvider = func(host *pluginhost.Host, provider string) []*ModelInfo {
+	return host.ModelsForProvider(provider)
+}
+
+var pluginHostModelsForAuth = func(host *pluginhost.Host, ctx context.Context, auth *coreauth.Auth) pluginhost.AuthModelResult {
+	return host.ModelsForAuth(ctx, auth)
+}
+
 func (s *Service) pluginModelsForProvider(providerKey string) []*ModelInfo {
 	if s == nil || s.pluginHost == nil {
 		return nil
 	}
-	return s.pluginHost.ModelsForProvider(providerKey)
+	return pluginHostModelsForProvider(s.pluginHost, providerKey)
 }
 
 func (s *Service) appendPluginModels(providerKey string, models []*ModelInfo) []*ModelInfo {
-	pluginModels := s.pluginModelsForProvider(providerKey)
+	return appendUniqueModels(models, s.pluginModelsForProvider(providerKey))
+}
+
+func appendUniqueModels(models, pluginModels []*ModelInfo) []*ModelInfo {
 	if len(pluginModels) == 0 {
 		return models
 	}
@@ -502,7 +514,7 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 	if ctx != nil && ctx.Err() != nil {
 		return true
 	}
-	result := s.pluginHost.ModelsForAuth(ctx, a)
+	result := pluginHostModelsForAuth(s.pluginHost, ctx, a)
 	if ctx != nil && ctx.Err() != nil {
 		return true
 	}
@@ -560,6 +572,9 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 		return true
 	}
 	models := applyExcludedModels(result.Models, activeExcluded)
+	s.restrictedAccess.mu.RLock()
+	defer s.restrictedAccess.mu.RUnlock()
+	models = s.filterRestrictedModelsLocked(activeAuth, models)
 	models = applyOAuthModelAliasForAuth(s.cfg, providerKey, activeAuthKind, activeAuth.Attributes, models)
 	if len(models) > 0 {
 		models = applyOAuthSettingsForAuth(s.cfg, providerKey, activeAuthKind, models)
