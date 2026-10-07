@@ -132,6 +132,7 @@ type Service struct {
 	homePluginSyncFetch          func(context.Context, sdkpluginstore.PluginSyncRequest) (sdkpluginstore.PluginSyncResponse, error)
 	homePluginDeleteTask         func(context.Context, *config.Config, home.PluginTask) homeplugins.SyncReport
 	antigravityProbeWg           sync.WaitGroup
+	restrictedAccess             restrictedModelAccessCache
 }
 
 // SetResultPolicy sets an execution result policy on the underlying core auth manager.
