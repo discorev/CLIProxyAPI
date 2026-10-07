@@ -308,15 +308,15 @@ func TestLogFormatterPrintsResetDryRunFields(t *testing.T) {
 	entry.Level = log.InfoLevel
 	entry.Message = "auto reset would be applied"
 	entry.Data = log.Fields{
-		"auth_id": "a", "provider": "codex", "rule": "exhausted", "credit_id": "credit",
+		"auth_id": "a", "provider": "codex", "rule": "all_exhausted", "credit_id": "credit",
 		"reset_expires_at": "2026-10-02T14:00:00Z", "natural_recovery": "2026-10-02T17:00:00Z",
-		"reason": "credit expires before exhausted windows recover",
+		"reason": "all enabled accounts of this provider exhausted; recovery more than one hour away",
 	}
 	formatted, err := (&LogFormatter{}).Format(entry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "[2026-10-02 12:00:00] [--------] [info ] auto reset would be applied provider=codex auth_id=\"a\" reason=\"credit expires before exhausted windows recover\" rule=exhausted credit_id=\"credit\" reset_expires_at=2026-10-02T14:00:00Z natural_recovery=2026-10-02T17:00:00Z\n"
+	want := "[2026-10-02 12:00:00] [--------] [info ] auto reset would be applied provider=codex auth_id=\"a\" reason=\"all enabled accounts of this provider exhausted; recovery more than one hour away\" rule=all_exhausted credit_id=\"credit\" reset_expires_at=2026-10-02T14:00:00Z natural_recovery=2026-10-02T17:00:00Z\n"
 	if string(formatted) != want {
 		t.Fatalf("formatted=%q want=%q", formatted, want)
 	}
