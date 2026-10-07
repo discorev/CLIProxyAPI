@@ -30,35 +30,52 @@ func resetTestEntry(provider string, used float64, recovery, expiry time.Duratio
 func TestResetCodexPolicy(t *testing.T) {
 	for _, tt := range []struct {
 		name             string
+		all              bool
 		used             float64
 		recovery, expiry time.Duration
 		want             string
 	}{
-		{"exhausted", 100, 4 * time.Hour, time.Hour, "exhausted"},
-		{"banked", 100, time.Hour, 4 * time.Hour, ""},
-		{"equal expiry and recovery", 100, time.Hour, time.Hour, ""},
-		{"last chance zero usage", 0, time.Hour, 15 * time.Minute, "last_chance"},
-		{"no headroom rule", 99, 4 * time.Hour, time.Hour, ""},
-		{"expired credit", 100, time.Hour, -time.Minute, ""},
-		{"elapsed window", 100, -time.Minute, time.Hour, ""},
+		{"all exhausted", true, 100, 4 * time.Hour, time.Hour, "all_exhausted"},
+		{"all exhausted banked credit", true, 100, 4 * time.Hour, 24 * time.Hour, "all_exhausted"},
+		// The old per-account rule spent here; capacity elsewhere now waits.
+		{"other account capacity", false, 100, 4 * time.Hour, time.Hour, ""},
+		{"other account capacity banked", false, 100, time.Hour, 4 * time.Hour, ""},
+		{"recovery soon", true, 100, 59 * time.Minute, 4 * time.Hour, ""},
+		{"recovery at threshold", true, 100, time.Hour, 4 * time.Hour, ""},
+		{"recovery just past threshold", true, 100, time.Hour + time.Nanosecond, 4 * time.Hour, "all_exhausted"},
+		{"last chance zero usage", false, 0, time.Hour, 15 * time.Minute, "last_chance"},
+		{"last chance outranks all exhausted", true, 100, 4 * time.Hour, 15 * time.Minute, "last_chance"},
+		{"last chance boundary", false, 0, time.Hour, 15*time.Minute + time.Nanosecond, ""},
+		{"not exhausted", true, 99, 4 * time.Hour, time.Hour, ""},
+		{"expired credit", true, 100, time.Hour, -time.Minute, ""},
+		{"elapsed window", true, 100, -time.Minute, time.Hour, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			entry := resetTestEntry("codex", tt.used, tt.recovery, tt.expiry)
-			got := codexResetChoice(entry, resetTestNow, nil)
+			got := codexResetChoice(entry, resetTestNow, tt.all, nil)
 			if (got == nil) != (tt.want == "") || got != nil && got.rule != tt.want {
 				t.Fatalf("choice = %+v, want %s", got, tt.want)
 			}
 		})
 	}
-	entry := resetTestEntry("codex", 100, 3*time.Hour, 4*time.Hour)
+	// Recovery is the latest exhausted window, so a weekly window recovering
+	// within the hour does not block a longer one; the soonest credit is used.
+	entry := resetTestEntry("codex", 100, 30*time.Minute, 4*time.Hour)
 	entry.Windows = append(entry.Windows, UsageWindow{Kind: "long", UsedPercent: 100, ResetsAt: resetTestNow.Add(10 * time.Hour)})
 	entry.Resets.Credits = append(entry.Resets.Credits, ResetCredit{ID: "earlier", ExpiresAt: resetTestNow.Add(2 * time.Hour)})
-	if got := codexResetChoice(entry, resetTestNow, nil); got == nil || got.expires != entry.Resets.Credits[1].ExpiresAt {
+	if got := codexResetChoice(entry, resetTestNow, true, nil); got == nil || got.creditID != "earlier" || got.rule != "all_exhausted" {
 		t.Fatalf("did not use latest recovery/soonest credit: %+v", got)
 	}
 	entry.Windows[0].Scope, entry.Windows[1].Scope = "fable", "fable"
-	if got := codexResetChoice(entry, resetTestNow, nil); got != nil {
+	if got := codexResetChoice(entry, resetTestNow, true, nil); got != nil {
 		t.Fatalf("scoped exhaustion triggered reset: %+v", got)
+	}
+	// A five-hour limit alone still qualifies: a Codex credit clears both the
+	// five-hour and weekly windows.
+	entry = resetTestEntry("codex", 40, 5*24*time.Hour, 4*time.Hour)
+	entry.Windows = append(entry.Windows, UsageWindow{Kind: "5h", UsedPercent: 100, ResetsAt: resetTestNow.Add(3 * time.Hour)})
+	if got := codexResetChoice(entry, resetTestNow, true, nil); got == nil || got.rule != "all_exhausted" {
+		t.Fatalf("five-hour limit not a candidate: %+v", got)
 	}
 }
 
@@ -191,7 +208,7 @@ func TestResetIdempotencyKeyIsSharedAcrossInstances(t *testing.T) {
 	// Two instances may name the credential differently, hold different tokens
 	// and reach the decision via different rules: the key must still match.
 	first := resetIdempotencyKey(codex("instance-a.json"), CredentialUsage{}, credit)
-	second := resetIdempotencyKey(codex("instance-b.json"), CredentialUsage{}, resetChoice{creditID: "credit-1", expires: expires, rule: "exhausted"})
+	second := resetIdempotencyKey(codex("instance-b.json"), CredentialUsage{}, resetChoice{creditID: "credit-1", expires: expires, rule: "all_exhausted"})
 	if first != second {
 		t.Fatalf("same decision produced different keys: %s vs %s", first, second)
 	}
@@ -226,13 +243,16 @@ func TestResetCodexLastChanceSkipsRefusedCredits(t *testing.T) {
 	refusedFirst := func(id string) bool { return id == "first" }
 	for _, tt := range []struct {
 		name          string
+		all           bool
 		used          float64
 		second        time.Duration
 		want, wantFor string
 	}{
-		{"second inside 15 minutes", 0, 14 * time.Minute, "last_chance", "second"},
-		{"second outside 15 minutes", 0, 16 * time.Minute, "", ""},
-		{"exhausted ignores refusals", 100, 14 * time.Minute, "exhausted", "first"},
+		{"second inside 15 minutes", false, 0, 14 * time.Minute, "last_chance", "second"},
+		{"second outside 15 minutes", false, 0, 16 * time.Minute, "", ""},
+		{"exhausted with capacity elsewhere", false, 100, 16 * time.Minute, "", ""},
+		{"last chance before all exhausted", true, 100, 14 * time.Minute, "last_chance", "second"},
+		{"all exhausted ignores refusals", true, 100, 16 * time.Minute, "all_exhausted", "first"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			entry := resetTestEntry("codex", tt.used, 4*time.Hour, 10*time.Minute)
@@ -240,7 +260,7 @@ func TestResetCodexLastChanceSkipsRefusedCredits(t *testing.T) {
 				{ID: "second", ExpiresAt: resetTestNow.Add(tt.second)},
 				{ID: "first", ExpiresAt: resetTestNow.Add(10 * time.Minute)},
 			}
-			got := codexResetChoice(entry, resetTestNow, refusedFirst)
+			got := codexResetChoice(entry, resetTestNow, tt.all, refusedFirst)
 			if (got == nil) != (tt.want == "") || got != nil && (got.rule != tt.want || got.creditID != tt.wantFor) {
 				t.Fatalf("choice = %+v, want %s %s", got, tt.want, tt.wantFor)
 			}
