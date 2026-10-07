@@ -92,7 +92,7 @@ func newCodexWSRequestShape(body []byte) codexWSRequestShape {
 		hasher.Write([]byte{0})
 	}
 	shape := codexWSRequestShape{valid: true}
-	copy(shape.props[:], hasher.Sum(nil))
+	shape.props = codexWSDigest(hasher.Sum(nil))
 
 	for _, item := range input.Array() {
 		digest, errDigest := codexWSItemDigest([]byte(item.Raw))
