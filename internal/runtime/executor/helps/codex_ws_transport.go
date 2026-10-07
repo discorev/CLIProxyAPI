@@ -23,8 +23,9 @@ import (
 
 const (
 	codexWSMaxAttempts = 3
-	// codexWSMaxPeekEvents bounds how many handshake frames are inspected for a
-	// retryable rejection before the response is handed to the HTTP pipeline.
+	// codexWSMaxPeekEvents bounds how many leading telemetry frames
+	// (codex.rate_limits, metadata) are held while waiting for the first frame
+	// that decides between a rejection and a response.
 	codexWSMaxPeekEvents = 64
 
 	codexWSErrorPreviousResponseNotFound = "previous_response_not_found"
@@ -271,9 +272,19 @@ func (t *codexWSRoundTripper) roundTripWebsocket(req *http.Request) (*http.Respo
 	return nil, false, nil
 }
 
-// peek reads the frames that precede generated output and decides whether the
-// response can be handed to the HTTP pipeline or must be retried. Nothing has
-// been sent downstream yet, so retrying is always safe here.
+// peek reads only as far as needed to tell a rejection from a response, and
+// decides whether the response can be handed to the HTTP pipeline or must be
+// retried. Nothing has been sent downstream yet, so retrying is always safe
+// here.
+//
+// The upstream validates a response.create before it starts the response:
+// previous_response_not_found and websocket_connection_limit_reached arrive as
+// the first response frame, in place of response.created (codex-rs treats
+// both as retryable errors of the request itself). Only connection telemetry
+// (codex.rate_limits, metadata) may precede them, so those frames are held
+// until the first other frame and everything from response.created on is
+// released at once, as the plain HTTP endpoint would stream it. Holding the
+// stream longer is the job of the opt-in stream-bootstrap-buffering layer.
 func (t *codexWSRoundTripper) peek(ctx context.Context, conn *codexWSConn, incremental bool) codexWSPeekResult {
 	var events [][]byte
 	for {
@@ -296,9 +307,9 @@ func (t *codexWSRoundTripper) peek(ctx context.Context, conn *codexWSConn, incre
 		events = append(events, payload)
 		eventType := gjson.GetBytes(payload, "type").String()
 		switch eventType {
-		// Keepalives are not held: releasing them keeps idle-read timeouts in
-		// front of the client from firing while the upstream queues the turn.
-		case "codex.rate_limits", "codex.response.metadata", "response.metadata", "response.created", "response.in_progress":
+		case "codex.rate_limits", "codex.response.metadata", "response.metadata":
+			// Connection telemetry sent ahead of the response; a rejection can
+			// still follow. Their headers also become response headers.
 			if len(events) < codexWSMaxPeekEvents {
 				continue
 			}

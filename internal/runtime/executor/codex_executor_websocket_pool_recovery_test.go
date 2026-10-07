@@ -546,6 +546,107 @@ func defaultPoolOpenSockets() int {
 	return helps.DefaultCodexWSPool().Stats().OpenSockets
 }
 
+// TestCodexHTTPWebsocketReleasesStreamAtResponseCreated checks that the
+// websocket transport hands response.created to the client as soon as it
+// arrives, like the plain HTTP endpoint, instead of holding the stream start
+// until generation begins.
+func TestCodexHTTPWebsocketReleasesStreamAtResponseCreated(t *testing.T) {
+	upstream := newFakeCodexUpstream(t)
+	upstream.rateLimits = true
+	resume := make(chan struct{})
+	var resumeOnce sync.Once
+	resumeUpstream := func() { resumeOnce.Do(func() { close(resume) }) }
+	t.Cleanup(resumeUpstream)
+	upstream.script = func(_ int, index int, payload []byte) (fakeCodexReply, bool) {
+		if index != 0 {
+			return fakeCodexReply{}, false
+		}
+		events := upstream.responseEvents("resp_slow", 1, payload)
+		// codex.rate_limits, response.created and repeated in_progress
+		// keepalives, then nothing until the test resumes the upstream.
+		inProgress := []byte(`{"type":"response.in_progress","response":{"id":"resp_slow","status":"in_progress","output":[]}}`)
+		head := append([][]byte{}, events[:2]...)
+		head = append(head, inProgress, inProgress, inProgress)
+		return fakeCodexReply{events: append(head, events[2:]...), pauseAfter: len(head), resume: resume}, true
+	}
+	exec, _, _ := newPooledCodexExecutor(t, nil)
+	auth := newPooledCodexOAuth("auth-a", upstream.server.URL)
+
+	type started struct {
+		result *cliproxyexecutor.StreamResult
+		err    error
+	}
+	startedCh := make(chan started, 1)
+	go func() {
+		result, err := exec.ExecuteStream(context.Background(), auth, responsesRequest("conv-early", []string{userInputItem("q1")}), responsesOptions(true))
+		startedCh <- started{result: result, err: err}
+	}()
+
+	var result *cliproxyexecutor.StreamResult
+	select {
+	case got := <-startedCh:
+		if got.err != nil {
+			t.Fatalf("ExecuteStream() error = %v", got.err)
+		}
+		result = got.result
+	case <-time.After(10 * time.Second):
+		t.Fatal("ExecuteStream blocked until generation started; response.created was held back")
+	}
+	var early strings.Builder
+	for !strings.Contains(early.String(), "response.in_progress") {
+		select {
+		case chunk, ok := <-result.Chunks:
+			if !ok {
+				t.Fatalf("stream ended early: %s", early.String())
+			}
+			if chunk.Err != nil {
+				t.Fatalf("stream chunk error: %v", chunk.Err)
+			}
+			early.Write(chunk.Payload)
+		case <-time.After(10 * time.Second):
+			t.Fatalf("early stream events were held back; received so far: %s", early.String())
+		}
+	}
+	if !strings.Contains(early.String(), "response.created") {
+		t.Fatalf("response.created not delivered before generation: %s", early.String())
+	}
+
+	resumeUpstream()
+	rest := collectStream(t, result)
+	if !strings.Contains(string(rest), "answer 1") {
+		t.Fatalf("stream missing answer after resume: %s", rest)
+	}
+}
+
+// TestCodexHTTPWebsocketRecoversRejectionAfterTelemetry checks that a
+// rejected continuation is still resent invisibly when connection telemetry
+// precedes the error frame.
+func TestCodexHTTPWebsocketRecoversRejectionAfterTelemetry(t *testing.T) {
+	upstream := newFakeCodexUpstream(t)
+	upstream.script = func(_ int, index int, _ []byte) (fakeCodexReply, bool) {
+		if index != 1 {
+			return fakeCodexReply{}, false
+		}
+		return fakeCodexReply{forget: true, events: [][]byte{
+			[]byte(`{"type":"codex.rate_limits","rate_limits":{"allowed":true,"limit_reached":false,"primary":{"used_percent":42,"window_minutes":300,"reset_after_seconds":600}}}`),
+			[]byte(`{"type":"error","status":400,"error":{"type":"invalid_request_error","code":"previous_response_not_found","message":"Previous response not found."}}`),
+		}}, true
+	}
+	exec, pool, _ := newPooledCodexExecutor(t, nil)
+	auth := newPooledCodexOAuth("auth-a", upstream.server.URL)
+
+	runResponsesTurns(t, context.Background(), exec, repeatAuth(auth, 2), "conv-telemetry", []string{userInputItem("q1")})
+
+	_, posts, messages := upstream.snapshot()
+	if posts != 0 {
+		t.Fatalf("posts = %d, want no HTTP fallback", posts)
+	}
+	requireMessageModes(t, messages, "full", "incremental", "full")
+	if stats := pool.Stats(); stats.PreviousMissing != 1 {
+		t.Fatalf("stats = %+v, want one previous_response_not_found recovery", stats)
+	}
+}
+
 // TestCodexHTTPWebsocketCancelledStreamClosesSocket checks that a client that
 // goes away mid-response closes the upstream socket even while the upstream is
 // silent, and that the socket is not reused.
