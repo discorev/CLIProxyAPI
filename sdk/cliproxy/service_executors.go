@@ -507,7 +507,7 @@ func appendUniqueModels(models, pluginModels []*ModelInfo) []*ModelInfo {
 	return out
 }
 
-func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreauth.Auth, provider, authKind string, excluded []string) bool {
+func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreauth.Auth, provider, authKind string, excluded []string, seq uint64) bool {
 	if s == nil || s.pluginHost == nil || a == nil {
 		return false
 	}
@@ -580,9 +580,11 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 	models = applyOAuthModelAliasForAuth(s.cfg, providerKey, activeAuthKind, activeAuth.Attributes, models)
 	if len(models) > 0 {
 		models = applyOAuthSettingsForAuth(s.cfg, providerKey, activeAuthKind, models)
-		s.registerResolvedModelsForAuth(activeAuth, providerKey, applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+		s.commitModelRegistration(activeAuth, seq, func() {
+			s.registerResolvedModelsForAuth(activeAuth, providerKey, applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+		})
 		return true
 	}
-	GlobalModelRegistry().UnregisterClient(activeAuth.ID)
+	s.commitModelRegistration(activeAuth, seq, func() { GlobalModelRegistry().UnregisterClient(activeAuth.ID) })
 	return true
 }

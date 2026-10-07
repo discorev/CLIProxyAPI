@@ -37,10 +37,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
 	}
-	if s != nil && s.coreManager != nil {
-		if current, ok := s.coreManager.GetByID(a.ID); !ok || current == nil || current.Disabled {
-			return
-		}
+	seq := s.beginModelRegistration(a)
+	if seq == 0 {
+		return
 	}
 	authKind := a.AuthKind()
 	// Unregister legacy client ID (if present) to avoid double counting
@@ -64,7 +63,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			excluded = strings.Split(val, ",")
 		}
 	}
-	if s.tryRegisterPluginModelsForAuth(ctx, a, provider, authKind, excluded) {
+	if s.tryRegisterPluginModelsForAuth(ctx, a, provider, authKind, excluded, seq) {
 		return
 	}
 	if ctx.Err() != nil {
@@ -308,14 +307,16 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		if s.restrictedAccess.beforeCommit != nil {
 			s.restrictedAccess.beforeCommit()
 		}
-		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+		s.commitModelRegistration(a, seq, func() {
+			s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+		})
 		if strings.EqualFold(strings.TrimSpace(a.Provider), "antigravity") {
 			s.asyncProbeAntigravityCapabilities(ctx, a, key)
 		}
 		return
 	}
 
-	GlobalModelRegistry().UnregisterClient(a.ID)
+	s.commitModelRegistration(a, seq, func() { GlobalModelRegistry().UnregisterClient(a.ID) })
 }
 
 // refreshModelRegistrationForAuth re-applies the latest model registration for

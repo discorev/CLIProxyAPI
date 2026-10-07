@@ -31,14 +31,17 @@ type restrictedModelAccessEntry struct {
 }
 
 type restrictedModelAccessCache struct {
-	mu            sync.RWMutex
-	beforeCommit  func() // Test hook: pause after filtering but before the registry commit.
-	beforePublish func() // Test hook: observe a fetch before publishing its result.
-	entries       map[string]*restrictedModelAccessEntry
-	ctx           context.Context
-	started       bool
-	now           func() time.Time                 // Injectable for deterministic refresh tests.
-	restrictedIDs func(string) map[string]struct{} // Injectable catalog view for tests.
+	mu              sync.RWMutex
+	registrationMu  sync.Mutex
+	registrationSeq map[string]uint64
+	nextSeq         uint64
+	beforeCommit    func() // Test hook: pause after filtering but before the registry commit.
+	beforePublish   func() // Test hook: observe a fetch before publishing its result.
+	entries         map[string]*restrictedModelAccessEntry
+	ctx             context.Context
+	started         bool
+	now             func() time.Time                 // Injectable for deterministic refresh tests.
+	restrictedIDs   func(string) map[string]struct{} // Injectable catalog view for tests.
 }
 
 func (c *restrictedModelAccessCache) clock() time.Time {
@@ -68,6 +71,42 @@ func restrictedModelIdentity(auth *coreauth.Auth) string {
 	// grants from a different token later loaded under the same credential ID.
 	token, _ := auth.Metadata["access_token"].(string)
 	return fmt.Sprintf("%s:%x", provider, sha256.Sum256([]byte(token)))
+}
+
+func (s *Service) currentModelRegistrationAuth(auth *coreauth.Auth) bool {
+	if s.coreManager == nil {
+		return true
+	}
+	current, ok := s.coreManager.GetByID(auth.ID)
+	return ok && current != nil && !current.Disabled && strings.EqualFold(current.Provider, auth.Provider) &&
+		current.AuthKind() == auth.AuthKind() && restrictedModelIdentity(current) == restrictedModelIdentity(auth)
+}
+
+func (s *Service) beginModelRegistration(auth *coreauth.Auth) uint64 {
+	cache := &s.restrictedAccess
+	cache.registrationMu.Lock()
+	defer cache.registrationMu.Unlock()
+	if !s.currentModelRegistrationAuth(auth) {
+		return 0
+	}
+	cache.nextSeq++
+	if cache.registrationSeq == nil {
+		cache.registrationSeq = make(map[string]uint64)
+	}
+	cache.registrationSeq[auth.ID] = cache.nextSeq
+	return cache.nextSeq
+}
+
+func (s *Service) commitModelRegistration(auth *coreauth.Auth, seq uint64, commit func()) {
+	cache := &s.restrictedAccess
+	cache.registrationMu.Lock()
+	defer cache.registrationMu.Unlock()
+	// The last-started current registration wins; checking and committing under
+	// one lock prevents an older filtered snapshot from overwriting it.
+	if cache.registrationSeq[auth.ID] != seq || !s.currentModelRegistrationAuth(auth) {
+		return
+	}
+	commit()
 }
 
 // filterRestrictedModels uses catalog IDs as the authority for Claude and Codex,
@@ -136,11 +175,11 @@ func (s *Service) explicitRestrictedModelIDs(auth *coreauth.Auth) map[string]str
 	var models []*ModelInfo
 	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
 	case "claude":
-		if entry := s.resolveConfigClaudeKey(auth); entry != nil {
+		if entry := s.resolveConfigClaudeKey(auth); entry != nil && len(entry.Models) > 0 {
 			models = buildClaudeConfigModels(entry)
 		}
 	case "codex":
-		if entry := s.resolveConfigCodexKey(auth); entry != nil {
+		if entry := s.resolveConfigCodexKey(auth); entry != nil && len(entry.Models) > 0 {
 			models = buildCodexConfigModels(entry)
 		}
 	}
@@ -157,6 +196,12 @@ func (s *Service) dropRestrictedModelAccess(id string) {
 	s.restrictedAccess.mu.Lock()
 	delete(s.restrictedAccess.entries, id)
 	s.restrictedAccess.mu.Unlock()
+}
+
+func (s *Service) dropModelRegistrationSequence(id string) {
+	s.restrictedAccess.registrationMu.Lock()
+	delete(s.restrictedAccess.registrationSeq, id)
+	s.restrictedAccess.registrationMu.Unlock()
 }
 
 // queueRestrictedModelFetch never waits for the upstream API. Each auth has at
