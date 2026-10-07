@@ -678,3 +678,91 @@ func TestCodexHTTPWebsocketCancelledStreamClosesSocket(t *testing.T) {
 		t.Fatalf("open sockets = %d, want the cancelled socket closed", open)
 	}
 }
+
+// TestCodexHTTPWebsocketErrorAfterReleaseKeepsStatusAndHeaders covers error
+// frames that arrive after the stream was handed to the HTTP pipeline: the
+// websocket envelope's status, wrapped error and headers must reach the
+// executor as they would on HTTP, so a 401 still triggers the credential's
+// unauthorized handling and quota headers reach the usage cache.
+func TestCodexHTTPWebsocketErrorAfterReleaseKeepsStatusAndHeaders(t *testing.T) {
+	tests := []struct {
+		name           string
+		frame          string
+		wantStatus     int
+		wantMessage    string
+		wantCredential bool
+		wantHeader     string
+	}{
+		{
+			name:        "wrapped body error",
+			frame:       `{"type":"error","status":401,"body":{"error":{"type":"authentication_error","message":"expired token"}},"headers":{"x-codex-primary-used-percent":"55"}}`,
+			wantStatus:  http.StatusUnauthorized,
+			wantMessage: "expired token",
+			wantHeader:  "55",
+		},
+		{
+			name:        "status overrides a generic error type",
+			frame:       `{"type":"error","status":403,"error":{"type":"server_error","message":"workspace disabled"}}`,
+			wantStatus:  http.StatusForbidden,
+			wantMessage: "workspace disabled",
+		},
+		{
+			name:           "usage limit with quota headers",
+			frame:          `{"type":"error","status":429,"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":120},"headers":{"x-codex-primary-used-percent":"100"}}`,
+			wantStatus:     http.StatusTooManyRequests,
+			wantMessage:    "usage limit",
+			wantCredential: true,
+			wantHeader:     "100",
+		},
+	}
+	for _, tt := range tests {
+		for _, stream := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tt.name, stream), func(t *testing.T) {
+				upstream := newFakeCodexUpstream(t)
+				upstream.script = func(int, int, []byte) (fakeCodexReply, bool) {
+					return fakeCodexReply{events: [][]byte{
+						[]byte(`{"type":"response.created","response":{"id":"resp_err","status":"in_progress","output":[]}}`),
+						[]byte(tt.frame),
+					}}, true
+				}
+				exec, _, _ := newPooledCodexExecutor(t, nil)
+				auth := newPooledCodexOAuth("auth-a", upstream.server.URL)
+				ctx := logging.WithResponseHeadersHolder(context.Background())
+
+				var err error
+				if stream {
+					result, errStream := exec.ExecuteStream(ctx, auth, responsesRequest("conv-late-error", []string{userInputItem("q1")}), responsesOptions(true))
+					if errStream != nil {
+						t.Fatalf("ExecuteStream() error = %v, want the stream to start at response.created", errStream)
+					}
+					for chunk := range result.Chunks {
+						if chunk.Err != nil {
+							err = chunk.Err
+						}
+					}
+				} else {
+					_, err = exec.Execute(ctx, auth, responsesRequest("conv-late-error", []string{userInputItem("q1")}), responsesOptions(false))
+				}
+				var status interface{ StatusCode() int }
+				if !errors.As(err, &status) || status.StatusCode() != tt.wantStatus {
+					t.Fatalf("error = %v, want status %d", err, tt.wantStatus)
+				}
+				if !strings.Contains(err.Error(), tt.wantMessage) {
+					t.Fatalf("error = %v, want the upstream message %q", err, tt.wantMessage)
+				}
+				var scoped interface{ IsCredentialScoped() bool }
+				if errors.As(err, &scoped) && scoped.IsCredentialScoped() != tt.wantCredential {
+					t.Fatalf("credential scoped = %t, want %t", scoped.IsCredentialScoped(), tt.wantCredential)
+				}
+				if tt.wantHeader != "" {
+					if got := logging.GetResponseHeaders(ctx).Get("X-Codex-Primary-Used-Percent"); got != tt.wantHeader {
+						t.Fatalf("response quota header = %q, want %q from the error frame", got, tt.wantHeader)
+					}
+				}
+				if _, posts, _ := upstream.snapshot(); posts != 0 {
+					t.Fatalf("posts = %d, want no HTTP retry", posts)
+				}
+			})
+		}
+	}
+}

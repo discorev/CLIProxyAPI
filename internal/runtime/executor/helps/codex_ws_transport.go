@@ -607,7 +607,14 @@ func (b *codexWSBody) process(payload []byte) []byte {
 		}
 		b.finished = true
 		b.release(newCodexWSBaseline(b.shape, b.outputItems(payload), b.responseID), true, "completed")
-	case "response.incomplete", "response.failed", "error":
+	case "error":
+		// Quota and retry headers ride on websocket error frames; the HTTP
+		// path sees them as response headers.
+		logging.MergeResponseHeaders(b.ctx, codexWSEventHeaders(payload))
+		payload = normalizeCodexWSErrorFrame(payload)
+		b.finished = true
+		b.release(nil, false, eventType)
+	case "response.incomplete", "response.failed":
 		b.finished = true
 		b.release(nil, false, eventType)
 	}
@@ -623,6 +630,44 @@ func (b *codexWSBody) process(payload []byte) []byte {
 	out.Write(payload)
 	out.WriteString("\n\n")
 	return out.Bytes()
+}
+
+// normalizeCodexWSErrorFrame rewrites a websocket error envelope into the
+// shape the HTTP SSE pipeline reads terminal errors from. The websocket wraps
+// the HTTP error as {"type":"error","status":401,"body":{"error":{...}},
+// "headers":{...}}, while the SSE parser only looks at the event's error object
+// and takes the status from error.status_code. Without this the details and
+// the status are lost and the failure surfaces as a generic 502, so a 401
+// would miss the credential's unauthorized handling. The wrapped body error is
+// preferred, as the downstream-websocket executor does
+// (buildCodexWebsocketErrorPayload), and the explicit status overrides one the
+// error object may carry. Frames without an explicit status are left alone.
+func normalizeCodexWSErrorFrame(payload []byte) []byte {
+	status := codexWSErrorStatus(payload)
+	if status <= 0 {
+		return payload
+	}
+	out := payload
+	errorNode := gjson.GetBytes(payload, "body.error")
+	if !errorNode.Exists() {
+		errorNode = gjson.GetBytes(payload, "error")
+	}
+	var errorObject []byte
+	switch {
+	case errorNode.IsObject():
+		errorObject = []byte(errorNode.Raw)
+	case errorNode.Exists() && strings.TrimSpace(errorNode.String()) != "":
+		errorObject, _ = sjson.SetBytes([]byte(`{}`), "message", strings.TrimSpace(errorNode.String()))
+	default:
+		errorObject = []byte(`{}`)
+		errorObject, _ = sjson.SetBytes(errorObject, "type", "server_error")
+		errorObject, _ = sjson.SetBytes(errorObject, "message", http.StatusText(status))
+	}
+	errorObject, _ = sjson.SetBytes(errorObject, "status_code", status)
+	if updated, errSet := sjson.SetRawBytes(out, "error", errorObject); errSet == nil {
+		out = updated
+	}
+	return out
 }
 
 // outputItems returns the response's output items in output order, falling
