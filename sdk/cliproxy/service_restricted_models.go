@@ -321,7 +321,9 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 			break
 		}
 	}
-	if (denied || (!maps.Equal(registered, granted) && !maps.Equal(applied, granted))) && s.refreshModelRegistrationForAuth(auth) {
+	// A matching registry is already reconciled, even when no registration ran.
+	registryMatches := maps.Equal(registered, granted)
+	if registryMatches || ((denied || !maps.Equal(applied, granted)) && s.refreshModelRegistrationForAuth(auth)) {
 		cache.mu.Lock()
 		if cache.entries[auth.ID] == entry && maps.Equal(entry.listed, listed) {
 			entry.applied = granted

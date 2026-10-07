@@ -299,6 +299,60 @@ func TestRestrictedModelFetchDoesNotRepeatExcludedGrantRegistration(t *testing.T
 	}
 }
 
+func TestRestrictedModelFetchRegrantsAfterNoopRevocationAndExclusionRemoval(t *testing.T) {
+	const id = "restricted-noop-revocation-test"
+	restricted := registry.GetCodexProModels()[0].ID
+	ctx := context.Background()
+	auth := restrictedTestAuth("codex", id)
+	auth.Attributes["excluded_models"] = restricted
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(ctx, auth); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+		return map[string]struct{}{restricted: {}}
+	}
+	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth)}
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{id: entry}
+	reg := GlobalModelRegistry()
+	t.Cleanup(func() { reg.UnregisterClient(id) })
+	service.registerModelsForAuth(ctx, auth)
+	fetch := func(ids ...string) {
+		t.Helper()
+		service.fetchRestrictedModels(ctx, auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
+			return ids, nil
+		}), entry)
+	}
+	fetch(restricted)
+	if !maps.Equal(entry.applied, map[string]struct{}{restricted: {}}) || containsModelID(reg.GetModelsForClient(id), restricted) {
+		t.Fatal("excluded grant was not tracked without registering the model")
+	}
+	before := reg.ClientRegistrationEpoch(id)
+	fetch()
+	if got := reg.ClientRegistrationEpoch(id); got != before {
+		t.Fatalf("no-op revocation re-registered: epoch %d != %d", got, before)
+	}
+	if len(entry.applied) != 0 {
+		t.Fatalf("no-op revocation retained stale applied grants: %v", entry.applied)
+	}
+
+	auth = auth.Clone()
+	delete(auth.Attributes, "excluded_models")
+	if _, err := manager.Register(ctx, auth); err != nil {
+		t.Fatal(err)
+	}
+	service.registerModelsForAuth(ctx, auth)
+	if containsModelID(reg.GetModelsForClient(id), restricted) {
+		t.Fatal("revoked model registered when exclusion was removed")
+	}
+	before = reg.ClientRegistrationEpoch(id)
+	fetch(restricted)
+	if !containsModelID(reg.GetModelsForClient(id), restricted) || reg.ClientRegistrationEpoch(id) <= before {
+		t.Fatal("restored grant did not register after no-op revocation and exclusion removal")
+	}
+}
+
 func TestRestrictedRegistrationCommitsBeforeRevocationPublishes(t *testing.T) {
 	const id = "restricted-registration-revocation-race-test"
 	const pluginRestricted = "restricted-race-plugin"
