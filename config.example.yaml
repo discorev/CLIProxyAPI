@@ -309,6 +309,24 @@ upstream:
     # Experimental full-duplex Codex Responses WebSocket steering (default: false).
     # Keeps one upstream account/model per socket; accepted input is never replayed.
     response-steering: false
+    # Serve plain-HTTP Codex requests (POST /v1/responses, /backend-api/codex/responses,
+    # /v1/chat/completions, Claude /v1/messages routed to GPT models, ...) over pooled upstream
+    # Responses WebSockets. Sockets are keyed by credential and conversation (the prompt cache key
+    # or session the proxy already derives), so a follow-up turn whose history extends the previous
+    # turn's input and output exactly is sent as previous_response_id plus only the new items
+    # instead of the whole history, on an already-warm connection. Anything else is sent in full,
+    # and recoverable websocket failures (lost previous response, closed socket, the upstream's
+    # 60-minute connection cap) are retried in full, or over HTTP, before any output reaches the
+    # client. Credential selection is unaffected: the pool only follows the credential the router
+    # picked. Requests without a conversation identity, credentials with "websockets": false,
+    # and API-key credentials without websockets: true always use HTTP. /responses/compact stays HTTP.
+    http-websocket-pool:
+      enabled: true
+      # Close sockets idle for longer than this (default "10m").
+      idle-timeout: "10m"
+      # Maximum pooled sockets in total (default 512) and per credential (default 64).
+      max-sockets: 512
+      max-sockets-per-auth: 64
     # Disable forcing the official Codex User-Agent and Originator headers on HTTP/SSE and WebSocket requests.
     disable-codex-cloaking: false
     # Hold back the frames that carry nothing the client has seen - the handshake (response.created,

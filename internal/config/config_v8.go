@@ -90,6 +90,7 @@ func buildV8Paths() []configPath {
 		{"codex.orphan-delegation-compatibility", "upstream.codex.orphan-delegation-compatibility"},
 		{"codex.model-level-cooling", "upstream.codex.model-level-cooling"},
 		{"codex.response-steering", "upstream.codex.response-steering"},
+		{"codex.http-websocket-pool", "upstream.codex.http-websocket-pool"},
 		{"codex", "oauth.providers.codex"}, {"codex-header-defaults", "oauth.providers.codex.header-defaults"},
 		{"claude", "upstream.claude"}, {"claude-code", "upstream.claude"},
 		{"disable-claude-cloak-mode", "upstream.claude.disable-claude-cloak-mode"},
