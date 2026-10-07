@@ -27,7 +27,6 @@ type restrictedModelAccessEntry struct {
 	listed       map[string]struct{}
 	fetched      bool
 	fetching     bool
-	pending      atomic.Bool   // A changed grant or drift still needs a successful registration.
 	appliedEpoch atomic.Uint64 // Distinguishes registry drift from a successfully filtered-out grant.
 	done         chan struct{}
 	nextAt       time.Time
@@ -37,6 +36,7 @@ type restrictedModelAccessCache struct {
 	mu              sync.RWMutex
 	registrationMu  sync.Mutex
 	registrationSeq map[string]uint64
+	pending         map[string]bool // Incomplete Claude/Codex registrations, independent of fetch cadence.
 	nextSeq         uint64
 	beforeCommit    func() // Test hook: pause after filtering but before the registry commit.
 	beforePublish   func() // Test hook: observe a fetch before publishing its result.
@@ -97,6 +97,15 @@ func (s *Service) beginModelRegistration(auth *coreauth.Auth) uint64 {
 		cache.registrationSeq = make(map[string]uint64)
 	}
 	cache.registrationSeq[auth.ID] = cache.nextSeq
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	if provider == "claude" || provider == "codex" {
+		if cache.pending == nil {
+			cache.pending = make(map[string]bool)
+		}
+		cache.pending[auth.ID] = true
+	} else {
+		delete(cache.pending, auth.ID)
+	}
 	return cache.nextSeq
 }
 
@@ -204,7 +213,14 @@ func (s *Service) dropRestrictedModelAccess(id string) {
 func (s *Service) dropModelRegistrationSequence(id string) {
 	s.restrictedAccess.registrationMu.Lock()
 	delete(s.restrictedAccess.registrationSeq, id)
+	delete(s.restrictedAccess.pending, id)
 	s.restrictedAccess.registrationMu.Unlock()
+}
+
+func (s *Service) pendingModelRegistration(id string) bool {
+	s.restrictedAccess.registrationMu.Lock()
+	defer s.restrictedAccess.registrationMu.Unlock()
+	return s.restrictedAccess.pending[id]
 }
 
 // queueRestrictedModelFetch never waits for the upstream API. Each auth has at
@@ -312,7 +328,7 @@ func registeredRestrictedIDs(auth *coreauth.Auth, restricted map[string]struct{}
 // Call under the access cache's RLock, held through any fail-closed unregister.
 func (s *Service) hasDeniedRegisteredRestrictedModelsLocked(auth *coreauth.Auth) bool {
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
-	if (provider != "claude" && provider != "codex") || restrictedModelIdentity(auth) == "" {
+	if provider != "claude" && provider != "codex" {
 		return false
 	}
 	restrictedIDs := s.restrictedAccess.restrictedIDs
@@ -322,11 +338,15 @@ func (s *Service) hasDeniedRegisteredRestrictedModelsLocked(auth *coreauth.Auth)
 	restricted := restrictedIDs(provider)
 	entry := s.restrictedAccess.entries[auth.ID]
 	var granted map[string]struct{}
-	if entry != nil && entry.fetched && entry.identity == restrictedModelIdentity(auth) {
+	if identity := restrictedModelIdentity(auth); identity != "" && entry != nil && entry.fetched && entry.identity == identity {
 		granted = grantedRestrictedIDs(entry.listed, restricted)
 	}
+	explicit := s.explicitRestrictedModelIDs(auth)
 	for id := range registeredRestrictedIDs(auth, restricted) {
-		if _, ok := granted[id]; !ok {
+		if _, ok := granted[id]; ok {
+			continue
+		}
+		if _, ok := explicit[id]; !ok {
 			return true
 		}
 	}
@@ -337,8 +357,9 @@ func (s *Service) hasDeniedRegisteredRestrictedModelsLocked(auth *coreauth.Auth)
 func (s *Service) markRestrictedModelRegistrationAppliedLocked(auth *coreauth.Auth) {
 	if entry := s.restrictedAccess.entries[auth.ID]; entry != nil && entry.identity == restrictedModelIdentity(auth) {
 		entry.appliedEpoch.Store(GlobalModelRegistry().ClientRegistrationEpoch(auth.ID))
-		entry.pending.Store(false)
 	}
+	// Called within commitModelRegistration while registrationMu is held.
+	delete(s.restrictedAccess.pending, auth.ID)
 }
 
 func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth, lister coreauth.UpstreamModelLister, entry *restrictedModelAccessEntry) {
@@ -385,8 +406,8 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 	previous := grantedRestrictedIDs(entry.listed, restricted)
 	granted := grantedRestrictedIDs(listed, restricted)
 	// The first fetch, a grant change, or drift in the actual registration
-	// requires reconciliation. A failed plugin discovery leaves pending set so
-	// the next successful fetch retries even after fail-closing the registration.
+	// requires reconciliation. Failed registrations remain pending for sweeps
+	// even if the upstream list does not change.
 	changed := !entry.fetched || !maps.Equal(previous, granted)
 	registered := registeredRestrictedIDs(auth, restricted)
 	drifted := false
@@ -402,12 +423,17 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 		applied := entry.appliedEpoch.Load()
 		drifted = applied == 0 || applied != GlobalModelRegistry().ClientRegistrationEpoch(auth.ID)
 	}
-	needsRefresh := changed || drifted || entry.pending.Load()
+	cache.registrationMu.Lock()
+	needsRefresh := changed || drifted || cache.pending[auth.ID]
+	if needsRefresh {
+		if cache.pending == nil {
+			cache.pending = make(map[string]bool)
+		}
+		cache.pending[auth.ID] = true
+	}
+	cache.registrationMu.Unlock()
 	entry.listed = listed
 	entry.fetched = true
-	if needsRefresh {
-		entry.pending.Store(true)
-	}
 	cache.mu.Unlock()
 	if !needsRefresh {
 		return
@@ -459,6 +485,12 @@ func (s *Service) sweepRestrictedModelAccess(ctx context.Context) {
 		return
 	}
 	for _, auth := range s.coreManager.List() {
+		if auth.Disabled {
+			continue
+		}
 		s.queueRestrictedModelFetch(ctx, auth)
+		if s.pendingModelRegistration(auth.ID) {
+			s.refreshModelRegistrationForAuthWithContext(ctx, auth, nil)
+		}
 	}
 }

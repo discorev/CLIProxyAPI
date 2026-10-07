@@ -275,7 +275,7 @@ func TestRestrictedRevocationFailsClosedAcrossPluginDiscoveryErrors(t *testing.T
 	if models := reg.GetModelsForClient(id); len(models) != 0 {
 		t.Fatalf("plugin failure preserved a revoked registration: %v", modelIDs(models))
 	}
-	if !entry.pending.Load() {
+	if !service.pendingModelRegistration(id) {
 		t.Fatal("failed refresh was incorrectly marked reconciled")
 	}
 	failing = false
@@ -283,13 +283,142 @@ func TestRestrictedRevocationFailsClosedAcrossPluginDiscoveryErrors(t *testing.T
 	if containsModelID(reg.GetModelsForClient(id), restricted) || containsModelID(reg.GetModelsForClient(id), "tenant/"+restricted) {
 		t.Fatal("plugin recovery restored the revoked restricted model")
 	}
-	if !containsModelID(reg.GetModelsForClient(id), "ordinary-plugin-model") || entry.pending.Load() {
+	if !containsModelID(reg.GetModelsForClient(id), "ordinary-plugin-model") || service.pendingModelRegistration(id) {
 		t.Fatal("plugin recovery failed to restore ordinary models and clear pending reconciliation")
 	}
 	epoch := reg.ClientRegistrationEpoch(id)
 	fetchDenied()
 	if got := reg.ClientRegistrationEpoch(id); got != epoch {
 		t.Fatalf("reconciled denial re-registered: %d != %d", got, epoch)
+	}
+}
+
+func TestAPIKeyExceptionRemovalFailsClosedDuringPluginDiscoveryError(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			const restricted = "configured-restricted-plugin-model"
+			id := provider + "-plugin-exception-removal-test"
+			cfg := &config.Config{}
+			if provider == "claude" {
+				cfg.ClaudeKey = []config.ClaudeKey{{APIKey: "fake-key", Models: []internalconfig.ClaudeModel{{Name: restricted}}}}
+			} else {
+				cfg.CodexKey = []config.CodexKey{{APIKey: "fake-key", Models: []internalconfig.CodexModel{{Name: restricted}}}}
+			}
+			auth := &coreauth.Auth{ID: id, Provider: provider, Status: coreauth.StatusActive,
+				Attributes: map[string]string{"api_key": "fake-key", "source": "config:" + provider, "config_index": "0"}}
+			manager := coreauth.NewManager(nil, nil, nil)
+			if _, err := manager.Register(context.Background(), auth); err != nil {
+				t.Fatal(err)
+			}
+			service := &Service{cfg: cfg, coreManager: manager, pluginHost: pluginhost.New()}
+			service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+				return map[string]struct{}{restricted: {}}
+			}
+			reg := GlobalModelRegistry()
+			t.Cleanup(func() { reg.UnregisterClient(id) })
+			var failing bool
+			original := pluginHostModelsForAuth
+			pluginHostModelsForAuth = func(_ *pluginhost.Host, _ context.Context, _ *coreauth.Auth) pluginhost.AuthModelResult {
+				if failing {
+					return pluginhost.AuthModelResult{Handled: true, Err: errors.New("plugin discovery unavailable")}
+				}
+				return pluginhost.AuthModelResult{Handled: true, Models: []*ModelInfo{{ID: restricted}, {ID: "ordinary-plugin-model"}}}
+			}
+			t.Cleanup(func() { pluginHostModelsForAuth = original })
+			service.registerModelsForAuth(context.Background(), auth)
+			if !containsModelID(reg.GetModelsForClient(id), restricted) {
+				t.Fatal("fixture did not register the explicit API-key exception")
+			}
+			if provider == "claude" {
+				cfg.ClaudeKey[0].Models = nil
+			} else {
+				cfg.CodexKey[0].Models = nil
+			}
+			failing = true
+			service.refreshModelRegistrationForAuth(auth)
+			if containsModelID(reg.GetModelsForClient(id), restricted) {
+				t.Fatal("plugin discovery failure preserved the removed API-key exception")
+			}
+			if !service.pendingModelRegistration(id) {
+				t.Fatal("failed API-key registration was not left pending")
+			}
+			service.sweepRestrictedModelAccess(context.Background())
+			if !service.pendingModelRegistration(id) {
+				t.Fatal("failed sweep incorrectly marked API-key registration complete")
+			}
+			failing = false
+			service.sweepRestrictedModelAccess(context.Background())
+			models := reg.GetModelsForClient(id)
+			if containsModelID(models, restricted) || !containsModelID(models, "ordinary-plugin-model") || service.pendingModelRegistration(id) {
+				t.Fatalf("API-key recovery did not restore only ordinary models: %v (pending=%t)", modelIDs(models), service.pendingModelRegistration(id))
+			}
+		})
+	}
+}
+
+func TestCatalogRestrictionPluginErrorRetriesUnchangedGrant(t *testing.T) {
+	const id = "restricted-catalog-plugin-recovery-test"
+	const restricted = "newly-restricted-plugin-model"
+	auth := restrictedTestAuth("codex", id)
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
+	now := time.Date(2026, time.October, 7, 12, 0, 0, 0, time.UTC)
+	service.restrictedAccess.now = func() time.Time { return now }
+	var catalogRestricted bool
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+		if catalogRestricted {
+			return map[string]struct{}{restricted: {}}
+		}
+		return nil
+	}
+	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth), fetched: true, listed: map[string]struct{}{}, nextAt: now.Add(restrictedModelRefreshInterval)}
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{id: entry}
+	reg := GlobalModelRegistry()
+	t.Cleanup(func() { reg.UnregisterClient(id) })
+	var failing bool
+	original := pluginHostModelsForAuth
+	pluginHostModelsForAuth = func(_ *pluginhost.Host, _ context.Context, _ *coreauth.Auth) pluginhost.AuthModelResult {
+		if failing {
+			return pluginhost.AuthModelResult{Handled: true, Err: errors.New("plugin discovery unavailable")}
+		}
+		return pluginhost.AuthModelResult{Handled: true, Models: []*ModelInfo{{ID: restricted}, {ID: "ordinary-plugin-model"}}}
+	}
+	t.Cleanup(func() { pluginHostModelsForAuth = original })
+	service.registerModelsForAuth(context.Background(), auth)
+	if !containsModelID(reg.GetModelsForClient(id), restricted) || !containsModelID(reg.GetModelsForClient(id), "ordinary-plugin-model") {
+		t.Fatal("fixture did not register both plugin models before catalog change")
+	}
+	catalogRestricted = true
+	failing = true
+	service.refreshModelRegistrationForAuth(auth)
+	if models := reg.GetModelsForClient(id); len(models) != 0 || !service.pendingModelRegistration(id) {
+		t.Fatalf("catalog fail-close did not leave registration pending: %v (pending=%t)", modelIDs(models), service.pendingModelRegistration(id))
+	}
+	fetchUnchanged := func() {
+		t.Helper()
+		service.fetchRestrictedModels(context.Background(), auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
+			return nil, nil
+		}), entry)
+	}
+	fetchUnchanged()
+	fetchUnchanged()
+	if models := reg.GetModelsForClient(id); len(models) != 0 || !service.pendingModelRegistration(id) {
+		t.Fatalf("failed identical-list fetches cleared pending: %v (pending=%t)", modelIDs(models), service.pendingModelRegistration(id))
+	}
+	failing = false
+	service.sweepRestrictedModelAccess(context.Background())
+	models := reg.GetModelsForClient(id)
+	if containsModelID(models, restricted) || !containsModelID(models, "ordinary-plugin-model") || service.pendingModelRegistration(id) {
+		t.Fatalf("sweep did not recover ordinary plugin model: %v (pending=%t)", modelIDs(models), service.pendingModelRegistration(id))
+	}
+	epoch := reg.ClientRegistrationEpoch(id)
+	fetchUnchanged()
+	service.sweepRestrictedModelAccess(context.Background())
+	if got := reg.ClientRegistrationEpoch(id); got != epoch {
+		t.Fatalf("reconciled unchanged grant registered again: %d != %d", got, epoch)
 	}
 }
 
