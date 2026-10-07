@@ -375,6 +375,10 @@ func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth 
 		}
 		op = "update"
 		_, err = s.coreManager.Update(ctx, auth)
+		if strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") &&
+			(auth.Disabled || auth.Status == coreauth.StatusDisabled || !coreauth.WebsocketsEnabled(auth)) {
+			executor.CloseCodexHTTPWebsocketPoolForAuthID(auth.ID, "auth_disabled")
+		}
 	} else {
 		_, err = s.coreManager.Register(ctx, auth)
 	}

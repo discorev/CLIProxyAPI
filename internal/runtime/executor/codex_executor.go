@@ -13,6 +13,9 @@ import (
 type CodexExecutor struct {
 	cfg          *config.Config
 	resetBaseURL string // Only overridden by offline executor tests.
+	// wsPool serves plain-HTTP requests over pooled upstream websockets; nil
+	// uses the process-wide pool. Only overridden by tests.
+	wsPool *helps.CodexWSPool
 }
 
 func NewCodexExecutor(cfg *config.Config) *CodexExecutor { return &CodexExecutor{cfg: cfg} }

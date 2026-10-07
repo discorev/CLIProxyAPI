@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
@@ -33,13 +34,18 @@ func NewCodexWebsocketsExecutor(cfg *config.Config) *CodexWebsocketsExecutor {
 //  1. The downstream transport is websocket, and
 //  2. The selected auth enables websockets.
 //
-// For non-websocket downstream requests, it always uses the legacy HTTP implementation.
+// Non-websocket downstream requests use the HTTP implementation, which itself
+// serves the Responses POST over a pooled upstream websocket when the
+// credential enables websockets (see withCodexHTTPWebsocket).
 type CodexAutoExecutor struct {
 	httpExec *CodexExecutor
 	wsExec   *CodexWebsocketsExecutor
 }
 
 func NewCodexAutoExecutor(cfg *config.Config) *CodexAutoExecutor {
+	// The service rebuilds the executor on every config reload, which is where
+	// pool settings (and disabling the pool) take effect.
+	helps.DefaultCodexWSPool().Configure(codexHTTPWebsocketPoolSettings(cfg))
 	return &CodexAutoExecutor{
 		httpExec: NewCodexExecutor(cfg),
 		wsExec:   NewCodexWebsocketsExecutor(cfg),

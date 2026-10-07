@@ -937,6 +937,7 @@ func CloseCodexWebsocketSessionsForAuthID(authID string, reason string) {
 	if reason == "" {
 		reason = "auth_removed"
 	}
+	CloseCodexHTTPWebsocketPoolForAuthID(authID, reason)
 
 	store := globalCodexWebsocketSessionStore
 	if store == nil {

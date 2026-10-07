@@ -29,7 +29,16 @@ const (
 )
 
 func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *cliproxyauth.Auth, wsURL string, headers http.Header) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
-	dialer := newProxyAwareWebsocketDialer(ctx, e.cfg, auth)
+	var cfg *config.Config
+	if e != nil && e.CodexExecutor != nil {
+		cfg = e.cfg
+	}
+	return dialCodexResponsesWebsocket(ctx, cfg, auth, wsURL, headers)
+}
+
+// dialCodexResponsesWebsocket opens one upstream Codex Responses websocket.
+func dialCodexResponsesWebsocket(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, wsURL string, headers http.Header) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
+	dialer := newProxyAwareWebsocketDialer(ctx, cfg, auth)
 	dialer.HandshakeTimeout = codexResponsesWebsocketHandshakeTO
 	dialer.EnableCompression = true
 	if ctx == nil {
