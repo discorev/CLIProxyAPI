@@ -364,6 +364,49 @@ func TestCodexHTTPWebsocketOptOuts(t *testing.T) {
 	}
 }
 
+// countingRoundTripper stands in for an SDK caller's RoundTripperProvider
+// transport, such as a private gateway or an egress policy.
+type countingRoundTripper struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *countingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+func TestCodexHTTPWebsocketKeepsInjectedTransport(t *testing.T) {
+	upstream := newFakeCodexUpstream(t)
+	exec, _, _ := newPooledCodexExecutor(t, nil)
+	auth := newPooledCodexOAuth("auth-a", upstream.server.URL)
+	rt := &countingRoundTripper{}
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(rt))
+	runResponsesTurns(t, ctx, exec, repeatAuth(auth, 2), "conv-rt", []string{userInputItem("q1")})
+	if upgrades, posts, _ := upstream.snapshot(); upgrades != 0 || posts != 2 {
+		t.Fatalf("upgrades=%d posts=%d, want plain HTTP through the injected transport", upgrades, posts)
+	}
+	rt.mu.Lock()
+	calls := rt.calls
+	rt.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("injected transport calls = %d, want 2", calls)
+	}
+
+	// A proxy URL takes precedence over the context transport on the HTTP path,
+	// and the websocket dialer honours it, so the pool stays eligible.
+	cfg := &config.Config{}
+	cfg.ProxyURL = "http://proxy.invalid:1"
+	if codexHTTPWebsocketCustomTransport(ctx, cfg, auth) {
+		t.Fatal("custom transport reported although a proxy URL takes precedence")
+	}
+	if codexHTTPWebsocketCustomTransport(context.Background(), nil, auth) {
+		t.Fatal("custom transport reported without one in the context")
+	}
+}
+
 func TestCodexHTTPWebsocketWithoutConversationUsesHTTP(t *testing.T) {
 	upstream := newFakeCodexUpstream(t)
 	exec, _, _ := newPooledCodexExecutor(t, nil)

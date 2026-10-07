@@ -63,7 +63,25 @@ func (e *CodexExecutor) codexHTTPWebsocketEligible(ctx context.Context, auth *cl
 	if cliproxyexecutor.DownstreamWebsocket(ctx) {
 		return false
 	}
+	if codexHTTPWebsocketCustomTransport(ctx, e.cfg, auth) {
+		return false
+	}
 	return codexWebsocketsEnabled(auth)
+}
+
+// codexHTTPWebsocketCustomTransport reports whether the HTTP path would send
+// this request through a RoundTripper injected into the context (an SDK
+// caller's RoundTripperProvider, for example a private gateway or an egress
+// policy). The websocket dialer only knows proxy URLs, so such requests stay
+// on HTTP rather than bypass the caller's transport. This mirrors
+// helps.NewProxyAwareHTTPClient: a proxy URL takes precedence over the
+// context transport, and the dialer honours the same proxy URL.
+func codexHTTPWebsocketCustomTransport(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth) bool {
+	if ctx == nil || executionProxyURL(ctx, cfg, auth) != "" {
+		return false
+	}
+	rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper)
+	return ok && rt != nil
 }
 
 // withCodexHTTPWebsocket returns client unchanged when the request is not
