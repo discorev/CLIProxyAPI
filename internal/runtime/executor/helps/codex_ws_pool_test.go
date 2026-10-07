@@ -1,6 +1,8 @@
 package helps
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -413,5 +415,185 @@ func TestCodexWSIncrementalItemsKeepsNestedHistoryChanges(t *testing.T) {
 	changed := withHistory(append([]string{strings.Replace(toolSearch, `"mode":{"const":null}`, `"mode":{}`, 1)}, echo...)...)
 	if _, ok := codexWSIncrementalItems(newCodexWSRequestShape(changed), baseline); ok {
 		t.Fatal("removing const:null from a tool schema in history must send the full request")
+	}
+}
+
+// codexWSStalledServer accepts a websocket upgrade, reads the first byte of
+// the client's first frame to prove the write started, then stops reading
+// until the test ends, so a large frame fills the TCP buffers and blocks the
+// writer.
+func codexWSStalledServer(t *testing.T) (*httptest.Server, <-chan struct{}, <-chan struct{}) {
+	t.Helper()
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	writeStarted := make(chan struct{})
+	peerClosed := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		raw := conn.UnderlyingConn()
+		one := make([]byte, 1)
+		if _, errRead := raw.Read(one); errRead != nil {
+			return
+		}
+		close(writeStarted)
+		<-release
+		// Drain whatever is left; the read ends once the client closed.
+		buf := make([]byte, 1<<20)
+		for {
+			if _, errRead := raw.Read(buf); errRead != nil {
+				close(peerClosed)
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+	return server, writeStarted, peerClosed
+}
+
+type codexWSTestRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f codexWSTestRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestCodexWSRoundTripCancelUnblocksStalledWrite(t *testing.T) {
+	server, writeStarted, _ := codexWSStalledServer(t)
+	pool := NewCodexWSPool(DefaultCodexWSPoolSettings(), nil)
+	t.Cleanup(func() { pool.CloseAll("test") })
+
+	// Far larger than loopback socket buffers, so the write blocks while the
+	// upstream is not reading.
+	body := []byte(`{"model":"gpt-5.4","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"` + strings.Repeat("x", 32<<20) + `"}]}]}`)
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	transport := NewCodexWSRoundTripper(CodexWSRoundTripConfig{
+		Pool: pool,
+		Base: codexWSTestRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("unexpected HTTP fallback")
+		}),
+		AuthID:       "auth-a",
+		Conversation: "conv",
+		Target:       wsURL,
+		URL:          wsURL,
+		Body:         body,
+		Dial: func(ctx context.Context, headers http.Header) (*websocket.Conn, *http.Response, error) {
+			return websocket.DefaultDialer.DialContext(ctx, wsURL, headers)
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://upstream.invalid/responses", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	type result struct {
+		resp *http.Response
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		resp, errRT := transport.RoundTrip(req)
+		done <- result{resp: resp, err: errRT}
+	}()
+
+	select {
+	case <-writeStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request was never written upstream")
+	}
+	cancel()
+
+	select {
+	case got := <-done:
+		if got.resp != nil {
+			_ = got.resp.Body.Close()
+		}
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("RoundTrip() error = %v, want context.Canceled", got.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("RoundTrip stayed blocked in the websocket write after the request was cancelled")
+	}
+	if stats := pool.Stats(); stats.OpenSockets != 0 || stats.HTTPFallbacks != 0 {
+		t.Fatalf("stats = %+v, want the cancelled socket closed and no retry or fallback", stats)
+	}
+}
+
+func TestCodexWSPoolCancelledLeaseIsNeverReused(t *testing.T) {
+	server := codexWSTestServer(t)
+	pool := NewCodexWSPool(DefaultCodexWSPoolSettings(), nil)
+	t.Cleanup(func() { pool.CloseAll("test") })
+
+	conn, _ := codexWSTestLease(t, pool, server, "auth-a", "conv")
+	ctx, cancel := context.WithCancel(context.Background())
+	pool.watchLease(ctx, conn)
+	cancel()
+	// A response that happened to complete as the client went away must not
+	// put the socket back: the watcher is already closing it.
+	pool.release(conn, nil, true, "completed")
+	select {
+	case <-conn.closing:
+	default:
+		t.Fatal("a socket whose request was cancelled must be closed on release")
+	}
+	if next, ok := codexWSTestLease(t, pool, server, "auth-a", "conv"); !ok || next == conn {
+		t.Fatal("the cancelled socket was handed to the next request")
+	}
+}
+
+func TestCodexWSPoolCompletedLeaseIgnoresLaterCancel(t *testing.T) {
+	server := codexWSTestServer(t)
+	pool := NewCodexWSPool(DefaultCodexWSPoolSettings(), nil)
+	t.Cleanup(func() { pool.CloseAll("test") })
+
+	conn, _ := codexWSTestLease(t, pool, server, "auth-a", "conv")
+	ctx, cancel := context.WithCancel(context.Background())
+	pool.watchLease(ctx, conn)
+	pool.release(conn, nil, true, "completed")
+	cancel()
+	if codexWSTestClosed(pool, conn) {
+		t.Fatal("cancelling a request after its response completed must not close the pooled socket")
+	}
+	if next, ok := codexWSTestLease(t, pool, server, "auth-a", "conv"); !ok || next != conn {
+		t.Fatal("the healthy socket should be reused")
+	}
+}
+
+func TestCodexWSPoolCloseAuthClosesCancelledBusySocket(t *testing.T) {
+	server := codexWSTestServer(t)
+	pool := NewCodexWSPool(DefaultCodexWSPoolSettings(), nil)
+	t.Cleanup(func() { pool.CloseAll("test") })
+
+	cancelledConn, _ := codexWSTestLease(t, pool, server, "auth-a", "conv-1")
+	liveConn, _ := codexWSTestLease(t, pool, server, "auth-a", "conv-2")
+	// Mark the lease cancelled without running the watcher, as if CloseAuth
+	// ran before the watcher goroutine did.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	pool.mu.Lock()
+	cancelledConn.leaseCtx = ctx
+	pool.mu.Unlock()
+
+	pool.CloseAuth("auth-a", "auth_removed")
+	select {
+	case <-cancelledConn.closing:
+	default:
+		t.Fatal("a busy socket whose request was cancelled must close on credential removal, not wait for a release")
+	}
+	select {
+	case <-liveConn.closing:
+		t.Fatal("a socket still serving its request finishes the response first")
+	default:
+	}
+	pool.release(liveConn, nil, true, "completed")
+	select {
+	case <-liveConn.closing:
+	default:
+		t.Fatal("the retired socket should close on release")
 	}
 }

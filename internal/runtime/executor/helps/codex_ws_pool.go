@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"sort"
@@ -236,17 +237,24 @@ func (p *CodexWSPool) EvictIdle() int {
 func (p *CodexWSPool) retireLocked(match func(*codexWSConn) bool) []*codexWSConn {
 	var toClose []*codexWSConn
 	for c := range p.conns {
-		if !match(c) {
-			continue
+		if match(c) {
+			p.retireConnLocked(c, &toClose)
 		}
-		if c.busy {
-			c.retired = true
-			continue
-		}
-		p.removeLocked(c)
-		toClose = append(toClose, c)
 	}
 	return toClose
+}
+
+// retireConnLocked takes one socket out of service. An idle socket, or a busy
+// one whose request has already been cancelled, is detached and queued for
+// closing now; a busy socket still serving its request finishes the response
+// and closes on release.
+func (p *CodexWSPool) retireConnLocked(c *codexWSConn, toClose *[]*codexWSConn) {
+	if c.busy && !c.leaseCancelledLocked() {
+		c.retired = true
+		return
+	}
+	p.removeLocked(c)
+	*toClose = append(*toClose, c)
 }
 
 func (p *CodexWSPool) evictLocked(now time.Time) []*codexWSConn {
@@ -366,12 +374,7 @@ func (p *CodexWSPool) acquire(req codexWSAcquireRequest) (lease codexWSLease, ok
 		if c.group.authID != req.group.authID || c.authFP == req.authFP {
 			continue
 		}
-		if c.busy {
-			c.retired = true
-			continue
-		}
-		p.removeLocked(c)
-		toClose = append(toClose, c)
+		p.retireConnLocked(c, &toClose)
 	}
 
 	// The conductor routed this conversation to a credential; sockets other
@@ -382,12 +385,7 @@ func (p *CodexWSPool) acquire(req codexWSAcquireRequest) (lease codexWSLease, ok
 		}
 		other := codexWSGroupKey{authID: authID, conversation: req.group.conversation}
 		for _, c := range append([]*codexWSConn(nil), p.groups[other]...) {
-			if c.busy {
-				c.retired = true
-				continue
-			}
-			p.removeLocked(c)
-			toClose = append(toClose, c)
+			p.retireConnLocked(c, &toClose)
 		}
 	}
 
@@ -550,15 +548,42 @@ func (p *CodexWSPool) adopt(group codexWSGroupKey, ws *websocket.Conn, compat, a
 	return c
 }
 
+// watchLease ties a leased socket to its request until release: when ctx ends
+// first, the socket is detached and closed at once. Closing is what unblocks a
+// write or read stuck on an upstream that stopped reading or responding, so an
+// abandoned request never pins a goroutine or a socket. No deadline is set on
+// the connection; only cancellation closes it.
+func (p *CodexWSPool) watchLease(ctx context.Context, c *codexWSConn) {
+	if p == nil || c == nil || ctx == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	c.leaseCtx = ctx
+	c.leaseStop = context.AfterFunc(ctx, func() { p.cancelLease(c) })
+}
+
+// cancelLease closes a socket whose request was cancelled mid-lease.
+func (p *CodexWSPool) cancelLease(c *codexWSConn) {
+	p.mu.Lock()
+	c.cancelled = true
+	p.removeLocked(c)
+	p.mu.Unlock()
+	c.close("context_canceled")
+}
+
 // release returns a leased socket. A healthy socket goes back to the pool with
 // the baseline of its completed response (nil when the next request must be
-// full); an unhealthy or retired socket is closed.
+// full); an unhealthy, retired or cancelled socket is closed.
 func (p *CodexWSPool) release(c *codexWSConn, baseline *codexWSBaseline, healthy bool, reason string) {
 	if p == nil || c == nil {
 		return
 	}
 	p.mu.Lock()
-	closeIt := !healthy || c.retired || c.closed
+	// stopLeaseLocked reports false when the request was cancelled and the
+	// watcher is closing the socket: it must never go back to the pool.
+	watched := c.stopLeaseLocked()
+	closeIt := !healthy || !watched || c.retired || c.closed || c.cancelled
 	c.busy = false
 	c.baseline = baseline
 	c.lastUsed = p.now()
@@ -657,12 +682,15 @@ type codexWSConn struct {
 	handshake http.Header
 
 	// Guarded by pool.mu.
-	created  time.Time
-	lastUsed time.Time
-	busy     bool
-	retired  bool
-	closed   bool
-	baseline *codexWSBaseline
+	created   time.Time
+	lastUsed  time.Time
+	busy      bool
+	retired   bool
+	closed    bool
+	cancelled bool
+	baseline  *codexWSBaseline
+	leaseCtx  context.Context
+	leaseStop func() bool
 
 	events    chan codexWSEvent
 	closing   chan struct{}
@@ -699,6 +727,25 @@ func (c *codexWSConn) deliver(event codexWSEvent) bool {
 	case <-c.closing:
 		return false
 	}
+}
+
+// stopLeaseLocked ends the cancellation watch of the current lease. It reports
+// false when the request was cancelled first (the watcher has run or is
+// running). Called with pool.mu held.
+func (c *codexWSConn) stopLeaseLocked() bool {
+	stop := c.leaseStop
+	c.leaseStop = nil
+	c.leaseCtx = nil
+	if stop == nil {
+		return true
+	}
+	return stop()
+}
+
+// leaseCancelledLocked reports whether the request holding this socket has
+// been cancelled. Called with pool.mu held.
+func (c *codexWSConn) leaseCancelledLocked() bool {
+	return c.cancelled || (c.leaseCtx != nil && c.leaseCtx.Err() != nil)
 }
 
 // drainIdleEvents discards frames that arrived while the socket was idle. It

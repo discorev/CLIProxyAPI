@@ -134,6 +134,10 @@ func (t *codexWSRoundTripper) roundTripWebsocket(req *http.Request) (*http.Respo
 
 	forceFull := false
 	for attempt := 0; attempt < codexWSMaxAttempts; attempt++ {
+		// A cancelled request is not sent or retried, on any transport.
+		if errCtx := ctx.Err(); errCtx != nil {
+			return nil, true, errCtx
+		}
 		lease, ok := pool.acquire(codexWSAcquireRequest{group: group, compat: compat, authFP: authFP, shape: shape, forceFull: forceFull})
 		if !ok {
 			return nil, false, nil
@@ -170,6 +174,9 @@ func (t *codexWSRoundTripper) roundTripWebsocket(req *http.Request) (*http.Respo
 			fresh = true
 			RecordAPIWebsocketHandshake(ctx, cfg.Config, http.StatusSwitchingProtocols, handshakeHeader)
 		}
+		// From here until release, cancelling the request closes the socket,
+		// which unblocks a write to an upstream that stopped reading.
+		pool.watchLease(ctx, conn)
 
 		incremental := len(lease.incremental) > 0 && lease.responseID != ""
 		message := fullMessage
@@ -198,8 +205,15 @@ func (t *codexWSRoundTripper) roundTripWebsocket(req *http.Request) (*http.Respo
 		})
 		log.Debugf("codex websocket pool: send socket=%d auth=%s mode=%s fresh=%t items=%d", conn.id, cfg.AuthID, codexWSModeLabel(incremental), fresh, len(lease.incremental))
 
+		if errCtx := ctx.Err(); errCtx != nil {
+			pool.release(conn, nil, false, "context_done")
+			return nil, true, errCtx
+		}
 		if errWrite := conn.write(message); errWrite != nil {
 			pool.release(conn, nil, false, "send_error")
+			if errCtx := ctx.Err(); errCtx != nil {
+				return nil, true, errCtx
+			}
 			RecordAPIWebsocketError(ctx, cfg.Config, "pool_send", errWrite)
 			pool.countRecovery(false)
 			forceFull = true
@@ -264,14 +278,16 @@ func (t *codexWSRoundTripper) peek(ctx context.Context, conn *codexWSConn, incre
 	var events [][]byte
 	for {
 		event, errNext := conn.next(ctx.Done(), ctx.Err)
+		if errNext == nil {
+			errNext = event.err
+		}
 		if errNext != nil {
+			// A cancelled request closes its socket, so a read error may be
+			// the cancellation itself.
 			if errCtx := ctx.Err(); errCtx != nil {
 				return codexWSPeekResult{kind: codexWSPeekContextDone, err: errCtx}
 			}
 			return codexWSPeekResult{kind: codexWSPeekReconnect, err: errNext}
-		}
-		if event.err != nil {
-			return codexWSPeekResult{kind: codexWSPeekReconnect, err: event.err}
 		}
 		payload := bytes.TrimSpace(event.payload)
 		if len(payload) == 0 {
@@ -528,6 +544,11 @@ func (b *codexWSBody) Read(p []byte) (int, error) {
 				errNext = event.err
 			}
 			if errNext != nil {
+				// A cancelled request closes its socket; report the
+				// cancellation rather than the resulting connection error.
+				if errCtx := b.ctx.Err(); errCtx != nil {
+					errNext = errCtx
+				}
 				b.err = errNext
 				b.release(nil, false, "read_error")
 				return 0, errNext

@@ -60,6 +60,9 @@ type fakeCodexReply struct {
 	closeBefore bool
 	closeAfter  bool
 	forget      bool
+	// pauseAfter events are written, then the reply waits for resume.
+	pauseAfter int
+	resume     <-chan struct{}
 }
 
 func newFakeCodexUpstream(t *testing.T) *fakeCodexUpstream {
@@ -158,7 +161,10 @@ func (f *fakeCodexUpstream) serveConn(connID int, conn *websocket.Conn) {
 		if reply.closeBefore {
 			return
 		}
-		for _, event := range reply.events {
+		for i, event := range reply.events {
+			if reply.resume != nil && i == reply.pauseAfter {
+				<-reply.resume
+			}
 			if errWrite := conn.WriteMessage(websocket.TextMessage, event); errWrite != nil {
 				return
 			}

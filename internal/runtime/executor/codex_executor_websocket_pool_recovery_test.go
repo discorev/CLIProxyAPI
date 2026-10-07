@@ -545,3 +545,35 @@ func TestCodexHTTPWebsocketChatCompletionsStream(t *testing.T) {
 func defaultPoolOpenSockets() int {
 	return helps.DefaultCodexWSPool().Stats().OpenSockets
 }
+
+// TestCodexHTTPWebsocketCancelledStreamClosesSocket checks that a client that
+// goes away mid-response closes the upstream socket even while the upstream is
+// silent, and that the socket is not reused.
+func TestCodexHTTPWebsocketCancelledStreamClosesSocket(t *testing.T) {
+	upstream := newFakeCodexUpstream(t)
+	resume := make(chan struct{})
+	t.Cleanup(func() { close(resume) })
+	upstream.script = func(_ int, index int, payload []byte) (fakeCodexReply, bool) {
+		if index != 0 {
+			return fakeCodexReply{}, false
+		}
+		// Generation has started (response.created, output_item.added, a
+		// text delta), then the upstream goes silent.
+		return fakeCodexReply{events: upstream.responseEvents("resp_stall", 1, payload), pauseAfter: 3, resume: resume}, true
+	}
+	exec, pool, _ := newPooledCodexExecutor(t, nil)
+	auth := newPooledCodexOAuth("auth-a", upstream.server.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result, err := exec.ExecuteStream(ctx, auth, responsesRequest("conv-cancel", []string{userInputItem("q1")}), responsesOptions(true))
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	cancel()
+	for range result.Chunks {
+	}
+	if open := pool.Stats().OpenSockets; open != 0 {
+		t.Fatalf("open sockets = %d, want the cancelled socket closed", open)
+	}
+}
