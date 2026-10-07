@@ -288,12 +288,14 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	if ctx.Err() != nil {
 		return
 	}
-	models = s.filterRestrictedModels(a, models)
+	s.restrictedAccess.mu.RLock()
+	defer s.restrictedAccess.mu.RUnlock()
+	models = s.filterRestrictedModelsLocked(a, models)
 	models = applyOAuthModelAliasForAuth(s.cfg, provider, authKind, a.Attributes, models)
 	if ctx.Err() != nil {
 		return
 	}
-	models = appendUniqueModels(models, s.filterRestrictedModels(a, pluginModels))
+	models = appendUniqueModels(models, s.filterRestrictedModelsLocked(a, pluginModels))
 	if len(models) > 0 {
 		models = applyOAuthSettingsForAuth(s.cfg, provider, authKind, models)
 		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))

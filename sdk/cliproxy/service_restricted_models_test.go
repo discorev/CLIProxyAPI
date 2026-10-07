@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/http"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -237,6 +238,141 @@ func TestRestrictedModelFetchRetainsLastListAndOnlyReregistersOnGrantChanges(t *
 	fetch([]string{"restricted"}, nil)
 	if got := reg.ClientRegistrationEpoch(id); got != removedEpoch {
 		t.Fatalf("removed credential's stale fetch re-registered: epoch %d != %d", got, removedEpoch)
+	}
+}
+
+func TestRestrictedModelFetchDoesNotRepeatExcludedGrantRegistration(t *testing.T) {
+	const id = "restricted-excluded-grant-test"
+	const newGrant = "restricted-new-grant"
+	excluded := registry.GetCodexProModels()[0].ID
+	auth := restrictedTestAuth("codex", id)
+	auth.Attributes["excluded_models"] = excluded
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+		return map[string]struct{}{excluded: {}, newGrant: {}}
+	}
+	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth)}
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{id: entry}
+	reg := GlobalModelRegistry()
+	t.Cleanup(func() { reg.UnregisterClient(id) })
+	original := pluginHostModelsForProvider
+	pluginHostModelsForProvider = func(_ *pluginhost.Host, _ string) []*ModelInfo {
+		return []*ModelInfo{{ID: newGrant}}
+	}
+	t.Cleanup(func() { pluginHostModelsForProvider = original })
+	service.registerModelsForAuth(context.Background(), auth)
+	initialEpoch := reg.ClientRegistrationEpoch(id)
+	fetch := func(ids ...string) {
+		t.Helper()
+		service.fetchRestrictedModels(context.Background(), auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
+			return ids, nil
+		}), entry)
+	}
+	fetch(excluded)
+	firstEpoch := reg.ClientRegistrationEpoch(id)
+	if firstEpoch <= initialEpoch {
+		t.Fatal("newly seen excluded grant did not trigger its initial reconciliation")
+	}
+	if containsModelID(reg.GetModelsForClient(id), excluded) {
+		t.Fatal("excluded grant was registered")
+	}
+	fetch(excluded)
+	if got := reg.ClientRegistrationEpoch(id); got != firstEpoch {
+		t.Fatalf("unchanged excluded grant re-registered: %d != %d", got, firstEpoch)
+	}
+	fetch(excluded, newGrant)
+	if !containsModelID(reg.GetModelsForClient(id), newGrant) || reg.ClientRegistrationEpoch(id) <= firstEpoch {
+		t.Fatal("new grant did not register")
+	}
+	fetch(excluded)
+	if containsModelID(reg.GetModelsForClient(id), newGrant) {
+		t.Fatal("revoked grant remained registered")
+	}
+	reg.RegisterClient(id, "codex", []*ModelInfo{{ID: newGrant}}) // Denied drift must always be repaired.
+	fetch(excluded)
+	if containsModelID(reg.GetModelsForClient(id), newGrant) {
+		t.Fatal("unchanged denial did not remove a stale grant")
+	}
+}
+
+func TestRestrictedRegistrationCommitsBeforeRevocationPublishes(t *testing.T) {
+	const id = "restricted-registration-revocation-race-test"
+	const pluginRestricted = "restricted-race-plugin"
+	builtinRestricted := registry.GetCodexProModels()[0].ID
+	auth := restrictedTestAuth("codex", id)
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
+	entry := &restrictedModelAccessEntry{
+		identity: restrictedModelIdentity(auth),
+		listed:   map[string]struct{}{builtinRestricted: {}, pluginRestricted: {}},
+	}
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{id: entry}
+	reg := GlobalModelRegistry()
+	t.Cleanup(func() { reg.UnregisterClient(id) })
+	original := pluginHostModelsForProvider
+	pluginHostModelsForProvider = func(_ *pluginhost.Host, _ string) []*ModelInfo {
+		return []*ModelInfo{{ID: pluginRestricted}}
+	}
+	t.Cleanup(func() { pluginHostModelsForProvider = original })
+	filteredBuiltin := make(chan struct{})
+	unblock := make(chan struct{})
+	defer func() {
+		select {
+		case <-unblock:
+		default:
+			close(unblock)
+		}
+	}()
+	var calls atomic.Int32
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+		if calls.Add(1) == 2 { // Second filter runs after the built-in models were filtered.
+			close(filteredBuiltin)
+			<-unblock
+		}
+		return map[string]struct{}{builtinRestricted: {}, pluginRestricted: {}}
+	}
+	registered := make(chan struct{})
+	go func() {
+		service.registerModelsForAuth(context.Background(), auth)
+		close(registered)
+	}()
+	<-filteredBuiltin
+	fetchStarted := make(chan struct{})
+	fetched := make(chan struct{})
+	go func() {
+		service.fetchRestrictedModels(context.Background(), auth, restrictedModelListerFunc(func(context.Context, *coreauth.Auth) ([]string, error) {
+			close(fetchStarted)
+			return nil, nil
+		}), entry)
+		close(fetched)
+	}()
+	<-fetchStarted
+	deadline := time.After(5 * time.Second)
+	for {
+		if service.restrictedAccess.mu.TryRLock() {
+			service.restrictedAccess.mu.RUnlock()
+		} else {
+			break // The revocation publisher is waiting for the registration's read lock.
+		}
+		select {
+		case <-deadline:
+			t.Fatal("revocation publisher never waited for registration")
+		default:
+			runtime.Gosched()
+		}
+	}
+	close(unblock)
+	<-registered
+	<-fetched
+	if containsModelID(reg.GetModelsForClient(id), builtinRestricted) || containsModelID(reg.GetModelsForClient(id), pluginRestricted) {
+		t.Fatal("revoked models survived a registration racing with publication")
 	}
 }
 

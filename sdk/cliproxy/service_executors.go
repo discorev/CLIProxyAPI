@@ -572,7 +572,9 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 		return true
 	}
 	models := applyExcludedModels(result.Models, activeExcluded)
-	models = s.filterRestrictedModels(activeAuth, models)
+	s.restrictedAccess.mu.RLock()
+	defer s.restrictedAccess.mu.RUnlock()
+	models = s.filterRestrictedModelsLocked(activeAuth, models)
 	models = applyOAuthModelAliasForAuth(s.cfg, providerKey, activeAuthKind, activeAuth.Attributes, models)
 	if len(models) > 0 {
 		models = applyOAuthSettingsForAuth(s.cfg, providerKey, activeAuthKind, models)

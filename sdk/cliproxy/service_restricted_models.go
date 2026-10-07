@@ -19,6 +19,7 @@ const restrictedModelRefreshInterval = 15 * time.Minute
 type restrictedModelAccessEntry struct {
 	identity string
 	listed   map[string]struct{}
+	applied  map[string]struct{} // Grants from the last reconciliation registration.
 	fetching bool
 	done     chan struct{}
 	nextAt   time.Time
@@ -84,6 +85,14 @@ func restrictedModelID(model *ModelInfo, restricted map[string]struct{}) string 
 }
 
 func (s *Service) filterRestrictedModels(auth *coreauth.Auth, models []*ModelInfo) []*ModelInfo {
+	s.restrictedAccess.mu.RLock()
+	defer s.restrictedAccess.mu.RUnlock()
+	return s.filterRestrictedModelsLocked(auth, models)
+}
+
+// Registration callers hold restrictedAccess.mu.RLock through the registry commit:
+// old grants cannot commit after a new list publishes.
+func (s *Service) filterRestrictedModelsLocked(auth *coreauth.Auth, models []*ModelInfo) []*ModelInfo {
 	if len(models) == 0 {
 		return models
 	}
@@ -98,13 +107,11 @@ func (s *Service) filterRestrictedModels(auth *coreauth.Auth, models []*ModelInf
 	}
 	explicit := s.explicitRestrictedModelIDs(auth)
 	var listed map[string]struct{}
-	s.restrictedAccess.mu.RLock()
 	if identity := restrictedModelIdentity(auth); identity != "" {
 		if entry := s.restrictedAccess.entries[auth.ID]; entry != nil && entry.identity == identity {
 			listed = entry.listed
 		}
 	}
-	s.restrictedAccess.mu.RUnlock()
 	filtered := make([]*ModelInfo, 0, len(models))
 	for _, model := range models {
 		if model == nil {
@@ -237,8 +244,7 @@ func restrictedCatalogIDs(provider string) map[string]struct{} {
 	return ids
 }
 
-// Read actual registration rather than a cached registration epoch. This repairs
-// both missing grants and stale grants after any concurrent registration race.
+// Read actual registration rather than a cached registration epoch.
 func registeredRestrictedIDs(auth *coreauth.Auth, restricted map[string]struct{}) map[string]struct{} {
 	registered := make(map[string]struct{})
 	for _, model := range GlobalModelRegistry().GetModelsForClient(auth.ID) {
@@ -302,8 +308,25 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 			granted[id] = struct{}{}
 		}
 	}
-	if !maps.Equal(registeredRestrictedIDs(auth, restricted), granted) {
-		s.refreshModelRegistrationForAuth(auth)
+	cache.mu.RLock()
+	applied := entry.applied
+	cache.mu.RUnlock()
+	registered := registeredRestrictedIDs(auth, restricted)
+	// Denied registrations are always repaired; missing grants only require a
+	// refresh when the upstream grant set differs from the last applied one.
+	denied := false
+	for id := range registered {
+		if _, ok := granted[id]; !ok {
+			denied = true
+			break
+		}
+	}
+	if (denied || (!maps.Equal(registered, granted) && !maps.Equal(applied, granted))) && s.refreshModelRegistrationForAuth(auth) {
+		cache.mu.Lock()
+		if cache.entries[auth.ID] == entry && maps.Equal(entry.listed, listed) {
+			entry.applied = granted
+		}
+		cache.mu.Unlock()
 	}
 }
 
