@@ -205,6 +205,9 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 	// responses cannot establish that the grant was not consumed.
 	state.attempted = finished
 	state.retryAt = time.Time{}
+	if result.Result == "reset" && strings.EqualFold(auth.Provider, "codex") {
+		m.optimisticCodexResetLocked(auth.ID, finished)
+	}
 	if strings.EqualFold(auth.Provider, "claude") && resetNeedsBackoff(result.Result) {
 		state.retryAt = resetBackoffUntil(entry.Resets, finished)
 	}
@@ -230,6 +233,29 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 	// Attempted outcomes are data, not HTTP-handler errors. Do not expose
 	// executor errors (which may contain sensitive transport details).
 	return result, refreshed, nil
+}
+
+// optimisticCodexResetLocked runs under usage.mu after a confirmed reset.
+func (m *Manager) optimisticCodexResetLocked(id string, finished time.Time) {
+	entry := m.usage.entries[id]
+	if entry == nil {
+		return
+	}
+	next := cloneUsageEntry(entry)
+	for i, window := range next.Windows {
+		if window.Scope != "" || window.Length <= 0 {
+			continue
+		}
+		if next.preResetWindows == nil {
+			next.preResetWindows = make(map[string]time.Time)
+		}
+		key := windowKey(window)
+		next.preResetWindows[key] = window.ResetsAt
+		delete(next.windowVersions, key)
+		next.Windows[i].UsedPercent = 0
+		next.Windows[i].ResetsAt = finished.Add(time.Duration(window.Length) * time.Second)
+	}
+	m.usage.entries[id] = next
 }
 
 func (m *Manager) resetRefused(auth *Auth, state *resetAttempt, choice resetChoice, result ResetResult) (ResetResult, CredentialUsage, error) {

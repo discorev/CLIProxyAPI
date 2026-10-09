@@ -69,8 +69,9 @@ func UsageFetchable(auth *Auth) bool {
 
 type usageEntry struct {
 	CredentialUsage
-	windowVersions map[string]uint64
-	headerVersion  uint64
+	windowVersions  map[string]uint64
+	preResetWindows map[string]time.Time
+	headerVersion   uint64
 	// completeHeaderVersion is the headerVersion of the latest complete Codex
 	// header observation.
 	completeHeaderVersion uint64
@@ -152,6 +153,7 @@ func cloneUsageEntry(s *usageEntry) *usageEntry {
 	// Raw bodies are immutable internally; only public snapshots deep-copy them.
 	next.Windows = append([]UsageWindow{}, s.Windows...)
 	next.windowVersions = maps.Clone(s.windowVersions)
+	next.preResetWindows = maps.Clone(s.preResetWindows)
 	next.rawFetchedAt = maps.Clone(s.rawFetchedAt)
 	return &next
 }
@@ -294,6 +296,11 @@ func (m *Manager) fetchUsage(ctx context.Context, auth *Auth, fetcher UsageFetch
 	m.usage.mu.Lock()
 	next := cloneUsageEntry(m.usage.entries[auth.ID])
 	next.Refreshing = false
+	for key, previous := range next.preResetWindows {
+		if !previous.After(finished) {
+			delete(next.preResetWindows, key)
+		}
+	}
 	retryDelay := usageFailureRetryDelay(next, finished)
 	switch {
 	case canceled:
@@ -319,7 +326,7 @@ func (m *Manager) fetchUsage(ctx context.Context, auth *Auth, fetcher UsageFetch
 		// unrelated ancillary errors remain display-only for reset eligibility.
 		next.Resets = cloneCredentialResets(result.Resets)
 		next.LastError = result.LastError
-		windows := append([]UsageWindow{}, result.Windows...)
+		windows := guardResetWindows(next, append([]UsageWindow{}, result.Windows...))
 		if next.completeHeaderVersion > headerVersion {
 			// Complete headers observed during this fetch list every credential-wide
 			// window; a fetched unscoped window they omit was removed, not stale.
@@ -358,6 +365,32 @@ func (m *Manager) fetchUsage(ctx context.Context, auth *Auth, fetcher UsageFetch
 	flight.err = errFetch
 	close(flight.done)
 	m.usage.mu.Unlock()
+}
+
+// resetWindowJitter absorbs upstream recomputing an unchanged reset time from
+// reset_after_seconds; a genuinely new window ends days later.
+const resetWindowJitter = time.Minute
+
+// guardResetWindows retains the optimistic Codex window until the usage endpoint
+// reports a new reset time. Inventory and raw usage are stored independently.
+func guardResetWindows(entry *usageEntry, fetched []UsageWindow) []UsageWindow {
+	windows := fetched[:0]
+	for _, window := range fetched {
+		key := windowKey(window)
+		if previous, guarded := entry.preResetWindows[key]; guarded {
+			if window.ResetsAt.After(previous.Add(resetWindowJitter)) {
+				delete(entry.preResetWindows, key)
+			} else {
+				cached := slices.IndexFunc(entry.Windows, func(w UsageWindow) bool { return windowKey(w) == key })
+				if cached < 0 {
+					continue
+				}
+				window = entry.Windows[cached]
+			}
+		}
+		windows = append(windows, window)
+	}
+	return windows
 }
 
 func mergeUsageWindow(windows []UsageWindow, window UsageWindow) []UsageWindow {
