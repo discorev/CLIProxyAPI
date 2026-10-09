@@ -158,7 +158,7 @@ func TestResetLateCompletionCannotAffectReplacement(t *testing.T) {
 	}
 }
 
-func TestCodexResetMarkerClearedOnCredentialReplacement(t *testing.T) {
+func TestCodexResetConfirmationClearedOnCredentialReplacement(t *testing.T) {
 	for _, change := range []string{"remove-readd", "identity-update"} {
 		t.Run(change, func(t *testing.T) {
 			manager, executor, clock := setupResetManager(t, "codex")
@@ -177,8 +177,8 @@ func TestCodexResetMarkerClearedOnCredentialReplacement(t *testing.T) {
 			if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
 				t.Fatal(err)
 			}
-			if entry := manager.usageSnapshot("a"); len(entry.preResetWindows) != 1 || entry.resetConfirmedAt.IsZero() {
-				t.Fatal("missing markers after stale fetch")
+			if entry := manager.usageSnapshot("a"); entry.resetConfirmedAt.IsZero() {
+				t.Fatal("missing reset confirmation after stale fetch")
 			}
 			if change == "remove-readd" {
 				manager.Remove(context.Background(), "a")
@@ -190,7 +190,7 @@ func TestCodexResetMarkerClearedOnCredentialReplacement(t *testing.T) {
 				}
 			}
 			if manager.usageSnapshot("a") != nil {
-				t.Fatal("replacement inherited old usage and marker")
+				t.Fatal("replacement inherited old usage and reset confirmation")
 			}
 			fresh := inventory
 			fresh.Windows = []UsageWindow{{Kind: "7d", Length: 604800, UsedPercent: 40, ResetsAt: inventory.Windows[0].ResetsAt}}
@@ -200,8 +200,8 @@ func TestCodexResetMarkerClearedOnCredentialReplacement(t *testing.T) {
 			if _, err := manager.RefreshUsage(context.Background(), "a"); err != nil {
 				t.Fatal(err)
 			}
-			if entry := manager.usageSnapshot("a"); entry.Windows[0].UsedPercent != 100 || len(entry.preResetWindows) != 0 || !entry.resetConfirmedAt.IsZero() {
-				t.Fatalf("old marker guarded new account: %+v", entry)
+			if entry := manager.usageSnapshot("a"); entry.Windows[0].UsedPercent != 100 || !entry.resetConfirmedAt.IsZero() {
+				t.Fatalf("old reset confirmation guarded new account: %+v", entry)
 			}
 		})
 	}

@@ -895,9 +895,6 @@ func TestCodexResetOptimisticWindowsAndStaleFetch(t *testing.T) {
 			if !ok || window.UsedPercent != 0 || !window.ResetsAt.Equal(clock.now().Add(time.Duration(original.Length)*time.Second)) {
 				t.Fatalf("unscoped window not reset immediately: %+v", window)
 			}
-			if got := manager.usageSnapshot("a").preResetWindows[windowKey(original)]; !got.Equal(original.ResetsAt) {
-				t.Fatalf("pre-reset timestamp = %v, want %v", got, original.ResetsAt)
-			}
 		}
 		window, _ := usageWindowByKey(optimistic.Windows, windowKey(scoped))
 		if window != scoped {
@@ -929,6 +926,113 @@ func TestCodexResetOptimisticWindowsAndStaleFetch(t *testing.T) {
 			t.Fatalf("stale raw limit_reached affected reset decisions: %v", exhausted)
 		}
 	})
+}
+
+func TestCodexResetGuardsStaleFetchWithUnknownCachedBoundary(t *testing.T) {
+	manager, executor, clock := setupResetManager(t, "codex")
+	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+	inventory.Windows[0].Length = 604800
+	stale := inventory.Windows[0]
+	inventory.Windows[0].ResetsAt = time.Time{}
+	seedResetAuth(t, manager, "a", "codex", inventory)
+	reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.releaseReset(state)
+	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+		clock.advance(time.Nanosecond)
+		return UsageFetchResult{Windows: []UsageWindow{stale}, Resets: &CredentialResets{}}, nil
+	}
+	if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.UsageSnapshot("a").Windows[0]; got.UsedPercent != 0 || !got.ResetsAt.Equal(state.attempted.Add(7*24*time.Hour)) {
+		t.Fatalf("stale fetch replaced optimistic window with unknown original boundary: %+v", got)
+	}
+}
+
+func TestCodexResetPreservesFreshHeaderBeforeConfirmation(t *testing.T) {
+	manager, executor, clock := setupResetManager(t, "codex")
+	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+	inventory.Windows[0].Length = 604800
+	auth := seedResetAuth(t, manager, "a", "codex", inventory)
+	fresh := UsageWindow{Kind: "7d", Length: 604800, UsedPercent: 40, ResetsAt: clock.now().Add(7 * 24 * time.Hour)}
+	reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.releaseReset(state)
+	executor.apply = func(context.Context, *Auth, ResetRequest) (ResetResult, error) {
+		manager.mu.Lock()
+		manager.observeUsageHeadersLocked(auth, http.Header{
+			"X-Codex-Primary-Used-Percent":   {"40"},
+			"X-Codex-Primary-Window-Minutes": {"10080"},
+			"X-Codex-Primary-Reset-At":       {strconv.FormatInt(fresh.ResetsAt.Unix(), 10)},
+		}, clock.now())
+		manager.mu.Unlock()
+		return ResetResult{Result: "reset"}, nil
+	}
+	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+		clock.advance(time.Nanosecond)
+		if executor.fetches.Load() == 1 {
+			return UsageFetchResult{Windows: inventory.Windows, Resets: &CredentialResets{}}, nil
+		}
+		return UsageFetchResult{Windows: []UsageWindow{fresh}, Resets: &CredentialResets{}}, nil
+	}
+	if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.UsageSnapshot("a").Windows[0]; got.Kind != fresh.Kind || got.Scope != fresh.Scope || got.Length != fresh.Length || got.UsedPercent != fresh.UsedPercent || !got.ResetsAt.Equal(fresh.ResetsAt) {
+		t.Fatalf("fresh header overwritten by reset or stale fetch: got %+v, want %+v", got, fresh)
+	}
+	// Distinguish acceptance of the next fetch from merely retaining the cached header.
+	manager.mu.Lock()
+	manager.observeUsageHeadersLocked(auth, http.Header{
+		"X-Codex-Primary-Used-Percent":   {"20"},
+		"X-Codex-Primary-Window-Minutes": {"10080"},
+		"X-Codex-Primary-Reset-At":       {strconv.FormatInt(fresh.ResetsAt.Unix(), 10)},
+	}, clock.now())
+	manager.mu.Unlock()
+	if got := manager.UsageSnapshot("a").Windows[0].UsedPercent; got != 20 {
+		t.Fatalf("intermediate header did not update cached usage: %v", got)
+	}
+	clock.advance(UsageMinFetchInterval)
+	if _, err := manager.RefreshUsage(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.UsageSnapshot("a").Windows[0]; got.Kind != fresh.Kind || got.Scope != fresh.Scope || got.Length != fresh.Length || got.UsedPercent != fresh.UsedPercent || !got.ResetsAt.Equal(fresh.ResetsAt) {
+		t.Fatalf("fresh fetched window rejected: got %+v, want %+v", got, fresh)
+	}
+}
+
+func TestCodexResetAcceptsNewFiveHourWindowWithinJitter(t *testing.T) {
+	manager, executor, clock := setupResetManager(t, "codex")
+	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+	inventory.Windows[0].Length = 604800
+	oldFiveHour := UsageWindow{Kind: "5h", Length: 18000, UsedPercent: 100, ResetsAt: clock.now().Add(5*time.Hour - 30*time.Second)}
+	inventory.Windows = append(inventory.Windows, oldFiveHour)
+	seedResetAuth(t, manager, "a", "codex", inventory)
+	reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.releaseReset(state)
+	freshFiveHour := UsageWindow{Kind: "5h", Length: 18000, UsedPercent: 25, ResetsAt: clock.now().Add(5 * time.Hour)}
+	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+		clock.advance(time.Nanosecond)
+		return UsageFetchResult{Windows: []UsageWindow{inventory.Windows[0], freshFiveHour}, Resets: &CredentialResets{}}, nil
+	}
+	if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+		t.Fatal(err)
+	}
+	cached := manager.UsageSnapshot("a")
+	if got, ok := usageWindowByKey(cached.Windows, "5h:"); !ok || got != freshFiveHour {
+		t.Fatalf("new five-hour window rejected: %+v", cached.Windows)
+	}
+	if got, ok := usageWindowByKey(cached.Windows, "7d:"); !ok || got.UsedPercent != 0 || !got.ResetsAt.Equal(state.attempted.Add(7*24*time.Hour)) {
+		t.Fatalf("stale weekly window replaced optimism: %+v", cached.Windows)
+	}
 }
 
 func TestCodexResetIgnoresPreResetResponseHeaders(t *testing.T) {
@@ -991,7 +1095,7 @@ func TestCodexResetIgnoresPreResetResponseHeaders(t *testing.T) {
 	}
 }
 
-func TestCodexResetNewWindowClearsGuardAndHeadersApplyAsIs(t *testing.T) {
+func TestCodexResetNewWindowAndHeadersApplyAsIs(t *testing.T) {
 	manager, executor, clock := setupResetManager(t, "codex")
 	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
 	inventory.Windows[0].Length = 604800
@@ -1010,9 +1114,6 @@ func TestCodexResetNewWindowClearsGuardAndHeadersApplyAsIs(t *testing.T) {
 	}
 	if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
 		t.Fatal(err)
-	}
-	if len(manager.usageSnapshot("a").preResetWindows) != 1 {
-		t.Fatal("stale fetch cleared guard")
 	}
 	// A live header is authoritative even if it reports the pre-reset window.
 	oldReset := inventory.Windows[0].ResetsAt
@@ -1033,18 +1134,12 @@ func TestCodexResetNewWindowClearsGuardAndHeadersApplyAsIs(t *testing.T) {
 	if got := manager.UsageSnapshot("a").Windows[0]; got.UsedPercent != 100 || !got.ResetsAt.Equal(oldReset) {
 		t.Fatalf("stale fetch overwrote live header: %+v", got)
 	}
-	if len(manager.usageSnapshot("a").preResetWindows) != 1 {
-		t.Fatal("stale fetch cleared guard after header")
-	}
 	clock.advance(UsageMinFetchInterval)
 	if _, err := manager.RefreshUsage(context.Background(), "a"); err != nil {
 		t.Fatal(err)
 	}
 	if got := manager.UsageSnapshot("a").Windows[0]; got.UsedPercent != 15 || !got.ResetsAt.After(inventory.Windows[0].ResetsAt) {
 		t.Fatalf("new fetched window not applied: %+v", got)
-	}
-	if len(manager.usageSnapshot("a").preResetWindows) != 0 {
-		t.Fatal("new fetched window did not clear guard")
 	}
 }
 
@@ -1094,7 +1189,7 @@ func TestCodexResetDiscardsPreResetHeaderVersionDuringFlight(t *testing.T) {
 	})
 }
 
-func TestCodexResetGuardExpiresAtOldWindowBoundary(t *testing.T) {
+func TestCodexResetAcceptsLaterNaturalWindow(t *testing.T) {
 	manager, executor, clock := setupResetManager(t, "codex")
 	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
 	inventory.Windows[0].Length = 604800
@@ -1106,20 +1201,20 @@ func TestCodexResetGuardExpiresAtOldWindowBoundary(t *testing.T) {
 	defer manager.releaseReset(state)
 	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
 		clock.advance(time.Nanosecond)
-		return UsageFetchResult{Windows: inventory.Windows, Resets: &CredentialResets{}}, nil
+		if executor.fetches.Load() == 1 {
+			return UsageFetchResult{Windows: inventory.Windows, Resets: &CredentialResets{}}, nil
+		}
+		return UsageFetchResult{Windows: []UsageWindow{{Kind: "7d", Length: 604800, UsedPercent: 35, ResetsAt: clock.now().Add(7 * 24 * time.Hour)}}, Resets: &CredentialResets{}}, nil
 	}
 	if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
 		t.Fatal(err)
-	}
-	if len(manager.usageSnapshot("a").preResetWindows) != 1 {
-		t.Fatal("stale fetch cleared guard early")
 	}
 	clock.advance(5 * time.Hour)
 	if _, err := manager.RefreshUsage(context.Background(), "a"); err != nil {
 		t.Fatal(err)
 	}
-	if entry := manager.usageSnapshot("a"); len(entry.preResetWindows) != 0 || entry.Windows[0].UsedPercent != 100 {
-		t.Fatalf("expired guard retained old window: %+v", entry)
+	if got := manager.UsageSnapshot("a").Windows[0]; got.UsedPercent != 35 || !got.ResetsAt.Equal(clock.now().Add(7*24*time.Hour)) {
+		t.Fatalf("later natural window rejected: %+v", got)
 	}
 }
 
@@ -1145,7 +1240,7 @@ func TestClaudeResetDoesNotOptimisticallyChangeWindows(t *testing.T) {
 			done <- err
 		}()
 		synctest.Wait()
-		if cached := manager.usageSnapshot("a"); cached.Windows[0] != inventory.Windows[0] || len(cached.preResetWindows) != 0 {
+		if cached := manager.usageSnapshot("a"); cached.Windows[0] != inventory.Windows[0] || !cached.resetConfirmedAt.IsZero() {
 			t.Fatalf("Claude usage changed before fetch: %+v", cached)
 		}
 		close(release)
@@ -1153,7 +1248,7 @@ func TestClaudeResetDoesNotOptimisticallyChangeWindows(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-		if cached := manager.usageSnapshot("a"); cached.Windows[0] != inventory.Windows[0] || len(cached.preResetWindows) != 0 {
+		if cached := manager.usageSnapshot("a"); cached.Windows[0] != inventory.Windows[0] || !cached.resetConfirmedAt.IsZero() {
 			t.Fatalf("Claude usage guarded after fetch: %+v", cached)
 		}
 	})

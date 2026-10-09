@@ -249,15 +249,10 @@ func (m *Manager) optimisticCodexResetLocked(id string, finished time.Time) {
 	next := cloneUsageEntry(entry)
 	next.resetConfirmedAt = finished
 	for i, window := range next.Windows {
-		if window.Scope != "" || window.Length <= 0 {
+		if window.Scope != "" || window.Length <= 0 || (!window.ResetsAt.IsZero() && !isPreResetWindow(window, finished)) {
 			continue
 		}
-		if next.preResetWindows == nil {
-			next.preResetWindows = make(map[string]time.Time)
-		}
-		key := windowKey(window)
-		next.preResetWindows[key] = window.ResetsAt
-		delete(next.windowVersions, key)
+		delete(next.windowVersions, windowKey(window))
 		next.Windows[i].UsedPercent = 0
 		next.Windows[i].ResetsAt = finished.Add(time.Duration(window.Length) * time.Second)
 	}
