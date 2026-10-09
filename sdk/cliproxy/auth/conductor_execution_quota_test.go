@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -111,9 +112,34 @@ func TestExecutionAttemptsDoNotReuseQuotaResponseHeaders(t *testing.T) {
 				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
 			}
 
+			var results []Result
+			manager.SetResultPolicy(ResultPolicyFunc(func(_ context.Context, result Result) Result {
+				results = append(results, result)
+				return result
+			}))
 			ctx := internallogging.WithResponseHeadersHolder(context.Background())
+			beforeExecute := time.Now()
 			if errExecute := test.run(manager, ctx, model); errExecute == nil {
 				t.Fatal("execution error = nil, want terminal prepare error")
+			}
+			afterExecute := time.Now()
+			var sawExecute, sawPrepare bool
+			for _, result := range results {
+				switch result.AuthID {
+				case firstID:
+					sawExecute = true
+					if result.StartedAt.Before(beforeExecute) || result.StartedAt.After(afterExecute) {
+						t.Fatalf("executed result start = %v, want between %v and %v", result.StartedAt, beforeExecute, afterExecute)
+					}
+				case secondID:
+					sawPrepare = true
+					if !result.StartedAt.IsZero() {
+						t.Fatalf("prepare failure has an upstream start: %v", result.StartedAt)
+					}
+				}
+			}
+			if !sawExecute || !sawPrepare {
+				t.Fatalf("missing executed or prepare result: %+v", results)
 			}
 
 			first, okFirst := manager.GetByID(firstID)

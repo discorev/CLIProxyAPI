@@ -1032,7 +1032,14 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		auth.Generation++
 		auth.UpdatedAt = now
 
-		if !result.SkipQuotaObservation {
+		skipQuotaObservation := result.SkipQuotaObservation
+		if !skipQuotaObservation && strings.EqualFold(auth.Provider, "codex") && !result.StartedAt.IsZero() {
+			m.usage.mu.RLock()
+			entry := m.usage.entries[auth.ID]
+			skipQuotaObservation = entry != nil && result.StartedAt.Before(entry.resetConfirmedAt)
+			m.usage.mu.RUnlock()
+		}
+		if !skipQuotaObservation {
 			m.observeUsageHeadersLocked(auth, responseHeaders, now)
 			auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			if modelState != nil {

@@ -69,9 +69,10 @@ func UsageFetchable(auth *Auth) bool {
 
 type usageEntry struct {
 	CredentialUsage
-	windowVersions  map[string]uint64
-	preResetWindows map[string]time.Time
-	headerVersion   uint64
+	windowVersions   map[string]uint64
+	preResetWindows  map[string]time.Time
+	resetConfirmedAt time.Time
+	headerVersion    uint64
 	// completeHeaderVersion is the headerVersion of the latest complete Codex
 	// header observation.
 	completeHeaderVersion uint64

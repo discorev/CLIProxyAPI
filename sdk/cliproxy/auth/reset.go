@@ -186,9 +186,12 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 		"auth_id": auth.ID, "provider": auth.Provider, "rule": choice.rule,
 		"grant_id": choice.grantID, "reset_expires_at": choice.expires, "outcome": result.Result,
 	}).Info("subscription reset attempt")
+	// Serialize the reset marker with MarkResult's quota observation.
+	m.mu.Lock()
 	m.usage.mu.Lock()
 	if m.usage.resets[auth.ID] != state {
 		m.usage.mu.Unlock()
+		m.mu.Unlock()
 		return result, m.UsageSnapshot(auth.ID), nil
 	}
 	m.rememberLastChanceRefusalLocked(auth, choice, result.Result)
@@ -199,6 +202,7 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 		state.attempted = time.Time{}
 		state.retryAt = finished.Add(resetRefusalBackoff)
 		m.usage.mu.Unlock()
+		m.mu.Unlock()
 		return result, m.UsageSnapshot(auth.ID), nil
 	}
 	// Other outcomes retain the spend lock: transport/read failures and 5xx
@@ -212,6 +216,7 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 		state.retryAt = resetBackoffUntil(entry.Resets, finished)
 	}
 	m.usage.mu.Unlock()
+	m.mu.Unlock()
 	if result.Result == "reset" {
 		m.clearResetQuota(auth, state)
 	}
@@ -242,6 +247,7 @@ func (m *Manager) optimisticCodexResetLocked(id string, finished time.Time) {
 		return
 	}
 	next := cloneUsageEntry(entry)
+	next.resetConfirmedAt = finished
 	for i, window := range next.Windows {
 		if window.Scope != "" || window.Length <= 0 {
 			continue

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -928,6 +929,66 @@ func TestCodexResetOptimisticWindowsAndStaleFetch(t *testing.T) {
 			t.Fatalf("stale raw limit_reached affected reset decisions: %v", exhausted)
 		}
 	})
+}
+
+func TestCodexResetIgnoresPreResetResponseHeaders(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		startedAt  func(time.Time) time.Time
+		wantUsed   float64
+		wantSignal string
+	}{
+		{"in flight before reset", func(at time.Time) time.Time { return at.Add(-time.Second) }, 0, ""},
+		{"started after reset", func(at time.Time) time.Time { return at.Add(time.Second) }, 100, "true"},
+		{"unknown start", func(time.Time) time.Time { return time.Time{} }, 100, "true"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			manager, executor, clock := setupResetManager(t, "codex")
+			inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+			inventory.Windows[0].Length = 604800
+			seedResetAuth(t, manager, "a", "codex", inventory)
+			reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer manager.releaseReset(state)
+			executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+				clock.advance(time.Nanosecond)
+				return UsageFetchResult{Windows: inventory.Windows, Resets: &CredentialResets{}}, nil
+			}
+			if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+				t.Fatal(err)
+			}
+			confirmedAt := manager.usageSnapshot("a").resetConfirmedAt
+			if confirmedAt.IsZero() || !confirmedAt.Equal(state.attempted) {
+				t.Fatalf("confirmed reset timestamp = %v, attempt = %v", confirmedAt, state.attempted)
+			}
+			ctx := internallogging.WithResponseHeadersHolder(context.Background())
+			internallogging.SetResponseHeaders(ctx, http.Header{
+				"X-Codex-Primary-Used-Percent":   {"100"},
+				"X-Codex-Primary-Window-Minutes": {"10080"},
+				"X-Codex-Primary-Reset-At":       {strconv.FormatInt(inventory.Windows[0].ResetsAt.Unix(), 10)},
+				"X-Codex-Limit-Reached":          {"true"},
+			})
+			manager.MarkResult(ctx, Result{AuthID: "a", Provider: "codex", Model: "gpt-5", Success: true, StartedAt: tt.startedAt(confirmedAt)})
+			if got := manager.UsageSnapshot("a").Windows[0].UsedPercent; got != tt.wantUsed {
+				t.Fatalf("used percent = %v, want %v", got, tt.wantUsed)
+			}
+			current, ok := manager.GetByID("a")
+			if !ok || current == nil {
+				t.Fatal("credential not found")
+			}
+			if got := current.Quota.Signals["X-Codex-Limit-Reached"]; got != tt.wantSignal {
+				t.Fatalf("credential quota signal = %q, want %q", got, tt.wantSignal)
+			}
+			if current.Quota.Exceeded {
+				t.Fatalf("credential cooled by response headers: %+v", current.Quota)
+			}
+			if state := current.ModelStates["gpt-5"]; state == nil || state.Quota.Signals["X-Codex-Limit-Reached"] != tt.wantSignal {
+				t.Fatalf("model quota observation = %+v, want %q", state, tt.wantSignal)
+			}
+		})
+	}
 }
 
 func TestCodexResetNewWindowClearsGuardAndHeadersApplyAsIs(t *testing.T) {
