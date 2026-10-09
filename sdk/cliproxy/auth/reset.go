@@ -174,6 +174,7 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 		ctx = context.WithValue(ctx, roundTripperContextKey{}, rt)
 		ctx = context.WithValue(ctx, "cliproxy.roundtripper", rt)
 	}
+	sent := m.usage.timeNow()
 	result, _ := applier.ApplyReset(ctx, auth, request)
 	if result.Result == "" {
 		result.Result = "unknown"
@@ -210,7 +211,11 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 	state.attempted = finished
 	state.retryAt = time.Time{}
 	if result.Result == "reset" && strings.EqualFold(auth.Provider, "codex") {
-		m.optimisticCodexResetLocked(auth.ID, finished)
+		anchor := result.RedeemedAt
+		if anchor.IsZero() {
+			anchor = sent
+		}
+		m.optimisticCodexResetLocked(auth.ID, finished, anchor)
 	}
 	if strings.EqualFold(auth.Provider, "claude") && resetNeedsBackoff(result.Result) {
 		state.retryAt = resetBackoffUntil(entry.Resets, finished)
@@ -241,20 +246,21 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 }
 
 // optimisticCodexResetLocked runs under usage.mu after a confirmed reset.
-func (m *Manager) optimisticCodexResetLocked(id string, finished time.Time) {
+func (m *Manager) optimisticCodexResetLocked(id string, finished, anchor time.Time) {
 	entry := m.usage.entries[id]
 	if entry == nil {
 		return
 	}
 	next := cloneUsageEntry(entry)
 	next.resetConfirmedAt = finished
+	next.resetWindowAnchor = anchor
 	for i, window := range next.Windows {
-		if window.Scope != "" || window.Length <= 0 || (!window.ResetsAt.IsZero() && !isPreResetWindow(window, finished)) {
+		if window.Scope != "" || window.Length <= 0 || (!window.ResetsAt.IsZero() && !isPreResetWindow(window, anchor)) {
 			continue
 		}
 		delete(next.windowVersions, windowKey(window))
 		next.Windows[i].UsedPercent = 0
-		next.Windows[i].ResetsAt = finished.Add(time.Duration(window.Length) * time.Second)
+		next.Windows[i].ResetsAt = anchor.Add(time.Duration(window.Length) * time.Second)
 	}
 	m.usage.entries[id] = next
 }

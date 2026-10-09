@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
@@ -80,6 +81,30 @@ func TestResetErrorStatusIgnoresBody(t *testing.T) {
 					t.Fatalf("reads=%d closed=%t", body.reads.Load(), body.closed.Load())
 				}
 			})
+		})
+	}
+}
+
+func TestCodexResetResponseRedeemedAt(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body string
+		want time.Time
+	}{
+		{
+			name: "upstream redeemed timestamp",
+			body: `{"code":"reset","credit":{"id":"credit","status":"redeemed","redeem_started_at":"2026-10-09T21:32:57.419408Z","redeemed_at":"2026-10-09T21:33:00.802982Z"},"windows_reset":1}`,
+			want: time.Date(2026, 10, 9, 21, 33, 0, 802982000, time.UTC),
+		},
+		{name: "missing timestamp", body: `{"code":"reset","credit":{"status":"redeemed"}}`},
+		{name: "null timestamp", body: `{"code":"reset","credit":{"redeemed_at":null}}`},
+		{name: "malformed timestamp", body: `{"code":"reset","credit":{"redeemed_at":"yesterday"}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := resetResponseResult(http.StatusOK, []byte(tt.body), nil, false)
+			if err != nil || result.Result != "reset" || !result.RedeemedAt.Equal(tt.want) {
+				t.Fatalf("result=%+v err=%v, want redeemed_at=%v", result, err, tt.want)
+			}
 		})
 	}
 }

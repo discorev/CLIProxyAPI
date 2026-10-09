@@ -69,9 +69,10 @@ func UsageFetchable(auth *Auth) bool {
 
 type usageEntry struct {
 	CredentialUsage
-	windowVersions   map[string]uint64
-	resetConfirmedAt time.Time
-	headerVersion    uint64
+	windowVersions    map[string]uint64
+	resetConfirmedAt  time.Time
+	resetWindowAnchor time.Time
+	headerVersion     uint64
 	// completeHeaderVersion is the headerVersion of the latest complete Codex
 	// header observation.
 	completeHeaderVersion uint64
@@ -320,7 +321,7 @@ func (m *Manager) fetchUsage(ctx context.Context, auth *Auth, fetcher UsageFetch
 		// unrelated ancillary errors remain display-only for reset eligibility.
 		next.Resets = cloneCredentialResets(result.Resets)
 		next.LastError = result.LastError
-		windows := guardResetWindows(next, append([]UsageWindow{}, result.Windows...))
+		windows := guardResetWindows(next, append([]UsageWindow{}, result.Windows...), finished)
 		if next.completeHeaderVersion > headerVersion {
 			// Complete headers observed during this fetch list every credential-wide
 			// window; a fetched unscoped window they omit was removed, not stale.
@@ -361,23 +362,30 @@ func (m *Manager) fetchUsage(ctx context.Context, auth *Auth, fetcher UsageFetch
 	m.usage.mu.Unlock()
 }
 
-// resetWindowJitter allows for rounding when comparing a window's end to
-// the earliest possible end of a window started after a confirmed reset.
-const resetWindowJitter = time.Minute
+// resetWindowJitter absorbs integer-second rounding in upstream reset_at and
+// reset_after_seconds when comparing a window end to the redeemed timestamp.
+const resetWindowJitter = 10 * time.Second
 
 func isPreResetWindow(window UsageWindow, resetAt time.Time) bool {
 	return !resetAt.IsZero() && window.Scope == "" && window.Length > 0 && !window.ResetsAt.IsZero() &&
 		window.ResetsAt.Before(resetAt.Add(time.Duration(window.Length)*time.Second-resetWindowJitter))
 }
 
-// guardResetWindows retains the cached Codex window while the usage endpoint
-// reports a pre-reset window. Inventory and raw usage are stored independently.
-func guardResetWindows(entry *usageEntry, fetched []UsageWindow) []UsageWindow {
+// guardResetWindows retains a known post-reset Codex window when the usage
+// endpoint reports an old boundary or omits the boundary entirely. Inventory
+// and raw usage are stored independently.
+func guardResetWindows(entry *usageEntry, fetched []UsageWindow, now time.Time) []UsageWindow {
 	windows := fetched[:0]
 	for _, window := range fetched {
-		if isPreResetWindow(window, entry.resetConfirmedAt) {
-			key := windowKey(window)
-			cached := slices.IndexFunc(entry.Windows, func(w UsageWindow) bool { return windowKey(w) == key })
+		if !entry.resetWindowAnchor.IsZero() && window.Scope == "" && window.ResetsAt.IsZero() {
+			cached := slices.IndexFunc(entry.Windows, func(w UsageWindow) bool { return windowKey(w) == windowKey(window) })
+			if cached >= 0 && entry.Windows[cached].ResetsAt.After(now) && entry.Windows[cached].Length > 0 &&
+				!isPreResetWindow(entry.Windows[cached], entry.resetWindowAnchor) {
+				window = entry.Windows[cached]
+			}
+		}
+		if isPreResetWindow(window, entry.resetWindowAnchor) {
+			cached := slices.IndexFunc(entry.Windows, func(w UsageWindow) bool { return windowKey(w) == windowKey(window) })
 			if cached < 0 {
 				continue
 			}

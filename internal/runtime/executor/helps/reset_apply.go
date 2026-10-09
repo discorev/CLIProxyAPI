@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -151,11 +152,16 @@ func resetResponseResult(status int, body []byte, errRead error, claude bool) (c
 	}
 	if !claude {
 		var payload struct {
-			Code string `json:"code"`
+			Code   string `json:"code"`
+			Credit struct {
+				RedeemedAt string `json:"redeemed_at"`
+			} `json:"credit"`
 		}
 		if json.Unmarshal(body, &payload) == nil {
 			if outcome, ok := codexResetOutcomes[payload.Code]; ok {
-				return cliproxyauth.ResetResult{Result: outcome}, nil
+				// A missing or malformed timestamp must not obscure the outcome.
+				redeemedAt, _ := time.Parse(time.RFC3339Nano, payload.Credit.RedeemedAt)
+				return cliproxyauth.ResetResult{Result: outcome, RedeemedAt: redeemedAt}, nil
 			}
 		}
 		return unknown, errors.New("unrecognized reset response; outcome unknown")

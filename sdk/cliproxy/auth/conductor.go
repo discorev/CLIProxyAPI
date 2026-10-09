@@ -62,7 +62,7 @@ type Result struct {
 	RouteModel string
 	// Success marks whether the execution succeeded.
 	Success bool
-	// StartedAt is when the upstream request was sent; zero means unknown.
+	// StartedAt is when the executor was called (approximately send time); zero means unknown.
 	StartedAt time.Time
 	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay).
 	RetryAfter *time.Duration
