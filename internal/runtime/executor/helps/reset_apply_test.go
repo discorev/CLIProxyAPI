@@ -99,6 +99,8 @@ func TestCodexResetResponseRedeemedAt(t *testing.T) {
 		{name: "missing timestamp", body: `{"code":"reset","credit":{"status":"redeemed"}}`},
 		{name: "null timestamp", body: `{"code":"reset","credit":{"redeemed_at":null}}`},
 		{name: "malformed timestamp", body: `{"code":"reset","credit":{"redeemed_at":"yesterday"}}`},
+		{name: "non-string timestamp", body: `{"code":"reset","credit":{"redeemed_at":1791581580}}`},
+		{name: "non-object credit", body: `{"code":"reset","credit":"spent"}`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := resetResponseResult(http.StatusOK, []byte(tt.body), nil, false)

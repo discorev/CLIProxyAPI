@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 var resetOrganizationPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -152,15 +153,12 @@ func resetResponseResult(status int, body []byte, errRead error, claude bool) (c
 	}
 	if !claude {
 		var payload struct {
-			Code   string `json:"code"`
-			Credit struct {
-				RedeemedAt string `json:"redeemed_at"`
-			} `json:"credit"`
+			Code string `json:"code"`
 		}
 		if json.Unmarshal(body, &payload) == nil {
 			if outcome, ok := codexResetOutcomes[payload.Code]; ok {
 				// A missing or malformed timestamp must not obscure the outcome.
-				redeemedAt, _ := time.Parse(time.RFC3339Nano, payload.Credit.RedeemedAt)
+				redeemedAt, _ := time.Parse(time.RFC3339Nano, gjson.GetBytes(body, "credit.redeemed_at").String())
 				return cliproxyauth.ResetResult{Result: outcome, RedeemedAt: redeemedAt}, nil
 			}
 		}
