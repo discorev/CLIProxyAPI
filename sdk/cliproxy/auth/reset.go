@@ -174,6 +174,7 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 		ctx = context.WithValue(ctx, roundTripperContextKey{}, rt)
 		ctx = context.WithValue(ctx, "cliproxy.roundtripper", rt)
 	}
+	sent := m.usage.timeNow()
 	result, _ := applier.ApplyReset(ctx, auth, request)
 	if result.Result == "" {
 		result.Result = "unknown"
@@ -186,9 +187,12 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 		"auth_id": auth.ID, "provider": auth.Provider, "rule": choice.rule,
 		"grant_id": choice.grantID, "reset_expires_at": choice.expires, "outcome": result.Result,
 	}).Info("subscription reset attempt")
+	// Serialize the reset marker with MarkResult's quota observation.
+	m.mu.Lock()
 	m.usage.mu.Lock()
 	if m.usage.resets[auth.ID] != state {
 		m.usage.mu.Unlock()
+		m.mu.Unlock()
 		return result, m.UsageSnapshot(auth.ID), nil
 	}
 	m.rememberLastChanceRefusalLocked(auth, choice, result.Result)
@@ -199,16 +203,25 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 		state.attempted = time.Time{}
 		state.retryAt = finished.Add(resetRefusalBackoff)
 		m.usage.mu.Unlock()
+		m.mu.Unlock()
 		return result, m.UsageSnapshot(auth.ID), nil
 	}
 	// Other outcomes retain the spend lock: transport/read failures and 5xx
 	// responses cannot establish that the grant was not consumed.
 	state.attempted = finished
 	state.retryAt = time.Time{}
+	if result.Result == "reset" && strings.EqualFold(auth.Provider, "codex") {
+		anchor := result.RedeemedAt
+		if anchor.IsZero() {
+			anchor = sent
+		}
+		m.optimisticCodexResetLocked(auth.ID, finished, anchor)
+	}
 	if strings.EqualFold(auth.Provider, "claude") && resetNeedsBackoff(result.Result) {
 		state.retryAt = resetBackoffUntil(entry.Resets, finished)
 	}
 	m.usage.mu.Unlock()
+	m.mu.Unlock()
 	if result.Result == "reset" {
 		m.clearResetQuota(auth, state)
 	}
@@ -230,6 +243,26 @@ func (m *Manager) executeReset(ctx context.Context, auth *Auth, applier ResetApp
 	// Attempted outcomes are data, not HTTP-handler errors. Do not expose
 	// executor errors (which may contain sensitive transport details).
 	return result, refreshed, nil
+}
+
+// optimisticCodexResetLocked runs under usage.mu after a confirmed reset.
+func (m *Manager) optimisticCodexResetLocked(id string, finished, anchor time.Time) {
+	entry := m.usage.entries[id]
+	if entry == nil {
+		return
+	}
+	next := cloneUsageEntry(entry)
+	next.resetConfirmedAt = finished
+	next.resetWindowAnchor = anchor
+	for i, window := range next.Windows {
+		if window.Scope != "" || window.Length <= 0 || (!window.ResetsAt.IsZero() && !isPreResetWindow(window, anchor)) {
+			continue
+		}
+		delete(next.windowVersions, windowKey(window))
+		next.Windows[i].UsedPercent = 0
+		next.Windows[i].ResetsAt = anchor.Add(time.Duration(window.Length) * time.Second)
+	}
+	m.usage.entries[id] = next
 }
 
 func (m *Manager) resetRefused(auth *Auth, state *resetAttempt, choice resetChoice, result ResetResult) (ResetResult, CredentialUsage, error) {

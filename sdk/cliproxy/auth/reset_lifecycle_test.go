@@ -158,6 +158,55 @@ func TestResetLateCompletionCannotAffectReplacement(t *testing.T) {
 	}
 }
 
+func TestCodexResetConfirmationClearedOnCredentialReplacement(t *testing.T) {
+	for _, change := range []string{"remove-readd", "identity-update"} {
+		t.Run(change, func(t *testing.T) {
+			manager, executor, clock := setupResetManager(t, "codex")
+			inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+			inventory.Windows[0].Length = 604800
+			auth := seedResetAuth(t, manager, "a", "codex", inventory)
+			reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer manager.releaseReset(state)
+			executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+				clock.advance(time.Nanosecond)
+				return UsageFetchResult{Windows: inventory.Windows, Resets: &CredentialResets{}}, nil
+			}
+			if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+				t.Fatal(err)
+			}
+			if entry := manager.usageSnapshot("a"); entry.resetConfirmedAt.IsZero() {
+				t.Fatal("missing reset confirmation after stale fetch")
+			}
+			if change == "remove-readd" {
+				manager.Remove(context.Background(), "a")
+				registerUsageAuth(t, manager, "a", "codex")
+			} else {
+				auth.Metadata["email"] = "replacement@example.invalid"
+				if _, err := manager.Update(context.Background(), auth); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if manager.usageSnapshot("a") != nil {
+				t.Fatal("replacement inherited old usage and reset confirmation")
+			}
+			fresh := inventory
+			fresh.Windows = []UsageWindow{{Kind: "7d", Length: 604800, UsedPercent: 40, ResetsAt: inventory.Windows[0].ResetsAt}}
+			manager.usage.mu.Lock()
+			manager.usage.entries["a"] = &usageEntry{CredentialUsage: fresh}
+			manager.usage.mu.Unlock()
+			if _, err := manager.RefreshUsage(context.Background(), "a"); err != nil {
+				t.Fatal(err)
+			}
+			if entry := manager.usageSnapshot("a"); entry.Windows[0].UsedPercent != 100 || !entry.resetConfirmedAt.IsZero() {
+				t.Fatalf("old reset confirmation guarded new account: %+v", entry)
+			}
+		})
+	}
+}
+
 func TestResetAuthenticationFailureBackoffWithoutSpendLock(t *testing.T) {
 	for _, provider := range []string{"claude", "codex"} {
 		t.Run(provider, func(t *testing.T) {

@@ -65,6 +65,8 @@ type ResetResult struct {
 	// NotSent is reserved for definite local refusals before the HTTP call.
 	// Unknown outcomes and HTTP refusals must still acquire the refresh lock.
 	NotSent bool `json:"-"`
+	// RedeemedAt is the upstream timestamp of a confirmed Codex reset.
+	RedeemedAt time.Time `json:"-"`
 }
 
 // ResetApplier is optional and is implemented only by supported OAuth executors.

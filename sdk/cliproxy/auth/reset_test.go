@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"slices"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -846,6 +849,571 @@ func TestResetManualCodexNotLimitedNotRemembered(t *testing.T) {
 	if len(manager.usage.lastChanceRefused) != 0 {
 		t.Fatal("manual not_limited was remembered")
 	}
+}
+
+func TestCodexResetOptimisticWindowsAndStaleFetch(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		manager, executor, clock := setupResetManager(t, "codex")
+		inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+		weekly := inventory.Windows[0]
+		weekly.Length = 604800
+		long := UsageWindow{Kind: "long", Length: 1209600, UsedPercent: 100, ResetsAt: clock.now().Add(8 * time.Hour)}
+		short := UsageWindow{Kind: "5h", Length: 18000, UsedPercent: 10, ResetsAt: clock.now().Add(2 * time.Hour)}
+		scoped := UsageWindow{Kind: "7d", Scope: "fable", Length: 604800, UsedPercent: 80, ResetsAt: clock.now().Add(3 * time.Hour)}
+		inventory.Windows = []UsageWindow{short, weekly, long, scoped}
+		inventory.Raw = map[string]json.RawMessage{"usage": json.RawMessage(`{"rate_limit":{"limit_reached":true}}`)}
+		seedResetAuth(t, manager, "a", "codex", inventory)
+		reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer manager.releaseReset(state)
+		release := make(chan struct{})
+		executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+			<-release
+			clock.advance(time.Nanosecond)
+			// Upstream recomputes the stale reset time, so it may drift slightly.
+			stale := append([]UsageWindow{}, inventory.Windows...)
+			for i := range stale {
+				stale[i].ResetsAt = stale[i].ResetsAt.Add(time.Second)
+			}
+			return UsageFetchResult{
+				Windows: stale,
+				Resets:  &CredentialResets{Credits: []ResetCredit{{ID: "remaining", ExpiresAt: clock.now().Add(24 * time.Hour)}}},
+				Raw:     map[string]json.RawMessage{"usage": json.RawMessage(`{"rate_limit":{"limit_reached":true},"reset_credits":"spent"}`)},
+			}, nil
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"})
+			done <- err
+		}()
+		synctest.Wait()
+		optimistic := manager.UsageSnapshot("a")
+		for _, original := range []UsageWindow{short, weekly, long} {
+			window, ok := usageWindowByKey(optimistic.Windows, windowKey(original))
+			if !ok || window.UsedPercent != 0 || !window.ResetsAt.Equal(clock.now().Add(time.Duration(original.Length)*time.Second)) {
+				t.Fatalf("unscoped window not reset immediately: %+v", window)
+			}
+		}
+		window, _ := usageWindowByKey(optimistic.Windows, windowKey(scoped))
+		if window != scoped {
+			t.Fatalf("scoped window changed: %+v", window)
+		}
+		close(release)
+		synctest.Wait()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		cached := manager.UsageSnapshot("a")
+		if cached.Resets == nil || len(cached.Resets.Credits) != 1 || cached.Resets.Credits[0].ID != "remaining" ||
+			!cached.FetchedAt.After(state.attempted) || cached.Refreshing || resetLocked(state, manager.usageSnapshot("a"), clock.now()) {
+			t.Fatalf("stale fetch did not store inventory and unlock: %+v", cached)
+		}
+		if string(cached.Raw["usage"]) != `{"rate_limit":{"limit_reached":true},"reset_credits":"spent"}` {
+			t.Fatalf("raw fetch not stored: %s", cached.Raw["usage"])
+		}
+		for _, original := range []UsageWindow{short, weekly, long} {
+			window, _ := usageWindowByKey(cached.Windows, windowKey(original))
+			if window.UsedPercent != 0 || !window.ResetsAt.Equal(state.attempted.Add(time.Duration(original.Length)*time.Second)) {
+				t.Fatalf("stale fetch replaced optimistic window: %+v", window)
+			}
+		}
+		if _, exhausted := rankUsage(manager.usageSnapshot("a"), "gpt-5", clock.now()); exhausted {
+			t.Fatal("stale raw limit_reached gated routing")
+		}
+		if exhausted, _ := exhaustedResetWindows(cached, clock.now()); len(exhausted) != 0 {
+			t.Fatalf("stale raw limit_reached affected reset decisions: %v", exhausted)
+		}
+	})
+}
+
+func TestCodexResetGuardsStaleFetchWithUnknownCachedBoundary(t *testing.T) {
+	manager, executor, clock := setupResetManager(t, "codex")
+	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+	inventory.Windows[0].Length = 604800
+	stale := inventory.Windows[0]
+	inventory.Windows[0].ResetsAt = time.Time{}
+	seedResetAuth(t, manager, "a", "codex", inventory)
+	reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.releaseReset(state)
+	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+		clock.advance(time.Nanosecond)
+		return UsageFetchResult{Windows: []UsageWindow{stale}, Resets: &CredentialResets{}}, nil
+	}
+	if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.UsageSnapshot("a").Windows[0]; got.UsedPercent != 0 || !got.ResetsAt.Equal(state.attempted.Add(7*24*time.Hour)) {
+		t.Fatalf("stale fetch replaced optimistic window with unknown original boundary: %+v", got)
+	}
+}
+
+func TestCodexResetPreservesFreshHeaderBeforeConfirmation(t *testing.T) {
+	manager, executor, clock := setupResetManager(t, "codex")
+	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+	inventory.Windows[0].Length = 604800
+	auth := seedResetAuth(t, manager, "a", "codex", inventory)
+	fresh := UsageWindow{Kind: "7d", Length: 604800, UsedPercent: 40, ResetsAt: clock.now().Add(7 * 24 * time.Hour)}
+	reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.releaseReset(state)
+	executor.apply = func(context.Context, *Auth, ResetRequest) (ResetResult, error) {
+		manager.mu.Lock()
+		manager.observeUsageHeadersLocked(auth, http.Header{
+			"X-Codex-Primary-Used-Percent":   {"40"},
+			"X-Codex-Primary-Window-Minutes": {"10080"},
+			"X-Codex-Primary-Reset-At":       {strconv.FormatInt(fresh.ResetsAt.Unix(), 10)},
+		}, clock.now())
+		manager.mu.Unlock()
+		return ResetResult{Result: "reset"}, nil
+	}
+	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+		clock.advance(time.Nanosecond)
+		if executor.fetches.Load() == 1 {
+			return UsageFetchResult{Windows: inventory.Windows, Resets: &CredentialResets{}}, nil
+		}
+		return UsageFetchResult{Windows: []UsageWindow{fresh}, Resets: &CredentialResets{}}, nil
+	}
+	if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.UsageSnapshot("a").Windows[0]; got.Kind != fresh.Kind || got.Scope != fresh.Scope || got.Length != fresh.Length || got.UsedPercent != fresh.UsedPercent || !got.ResetsAt.Equal(fresh.ResetsAt) {
+		t.Fatalf("fresh header overwritten by reset or stale fetch: got %+v, want %+v", got, fresh)
+	}
+	// Distinguish acceptance of the next fetch from merely retaining the cached header.
+	manager.mu.Lock()
+	manager.observeUsageHeadersLocked(auth, http.Header{
+		"X-Codex-Primary-Used-Percent":   {"20"},
+		"X-Codex-Primary-Window-Minutes": {"10080"},
+		"X-Codex-Primary-Reset-At":       {strconv.FormatInt(fresh.ResetsAt.Unix(), 10)},
+	}, clock.now())
+	manager.mu.Unlock()
+	if got := manager.UsageSnapshot("a").Windows[0].UsedPercent; got != 20 {
+		t.Fatalf("intermediate header did not update cached usage: %v", got)
+	}
+	clock.advance(UsageMinFetchInterval)
+	if _, err := manager.RefreshUsage(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.UsageSnapshot("a").Windows[0]; got.Kind != fresh.Kind || got.Scope != fresh.Scope || got.Length != fresh.Length || got.UsedPercent != fresh.UsedPercent || !got.ResetsAt.Equal(fresh.ResetsAt) {
+		t.Fatalf("fresh fetched window rejected: got %+v, want %+v", got, fresh)
+	}
+}
+
+func TestCodexResetAcceptsNewFiveHourWindowWithinJitter(t *testing.T) {
+	manager, executor, clock := setupResetManager(t, "codex")
+	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+	inventory.Windows[0].Length = 604800
+	oldFiveHour := UsageWindow{Kind: "5h", Length: 18000, UsedPercent: 100, ResetsAt: clock.now().Add(5*time.Hour - 30*time.Second)}
+	inventory.Windows = append(inventory.Windows, oldFiveHour)
+	seedResetAuth(t, manager, "a", "codex", inventory)
+	reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.releaseReset(state)
+	freshFiveHour := UsageWindow{Kind: "5h", Length: 18000, UsedPercent: 25, ResetsAt: clock.now().Add(5 * time.Hour)}
+	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+		clock.advance(time.Nanosecond)
+		return UsageFetchResult{Windows: []UsageWindow{inventory.Windows[0], freshFiveHour}, Resets: &CredentialResets{}}, nil
+	}
+	if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+		t.Fatal(err)
+	}
+	cached := manager.UsageSnapshot("a")
+	if got, ok := usageWindowByKey(cached.Windows, "5h:"); !ok || got != freshFiveHour {
+		t.Fatalf("new five-hour window rejected: %+v", cached.Windows)
+	}
+	if got, ok := usageWindowByKey(cached.Windows, "7d:"); !ok || got.UsedPercent != 0 || !got.ResetsAt.Equal(state.attempted.Add(7*24*time.Hour)) {
+		t.Fatalf("stale weekly window replaced optimism: %+v", cached.Windows)
+	}
+}
+
+func TestCodexResetAcceptsNewWindowDespiteSlowResponse(t *testing.T) {
+	manager, executor, clock := setupResetManager(t, "codex")
+	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+	inventory.Windows[0].Length = 604800
+	seedResetAuth(t, manager, "a", "codex", inventory)
+	reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.releaseReset(state)
+	redeemedAt := clock.now()
+	fresh := UsageWindow{Kind: "7d", Length: 604800, UsedPercent: 40, ResetsAt: redeemedAt.Add(7*24*time.Hour + 30*time.Second)}
+	executor.apply = func(context.Context, *Auth, ResetRequest) (ResetResult, error) {
+		clock.advance(2 * time.Minute)
+		return ResetResult{Result: "reset", RedeemedAt: redeemedAt}, nil
+	}
+	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+		clock.advance(time.Nanosecond)
+		return UsageFetchResult{Windows: []UsageWindow{fresh}, Resets: &CredentialResets{}}, nil
+	}
+	if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+		t.Fatal(err)
+	}
+	cached := manager.usageSnapshot("a")
+	if got := cached.Windows[0]; got != fresh {
+		t.Fatalf("fresh window rejected after slow response: got %+v, want %+v", got, fresh)
+	}
+	if !cached.resetConfirmedAt.Equal(redeemedAt.Add(2*time.Minute)) || !cached.resetWindowAnchor.Equal(redeemedAt) {
+		t.Fatalf("confirmed=%v anchor=%v, want local receipt and upstream redemption", cached.resetConfirmedAt, cached.resetWindowAnchor)
+	}
+}
+
+func TestCodexResetGuardsOldFiveHourWindowNearRedemption(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		manager, executor, clock := setupResetManager(t, "codex")
+		inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+		redeemedAt := clock.now()
+		old := UsageWindow{Kind: "5h", Length: 18000, UsedPercent: 100, ResetsAt: redeemedAt.Add(5*time.Hour - 30*time.Second)}
+		inventory.Windows = []UsageWindow{old}
+		seedResetAuth(t, manager, "a", "codex", inventory)
+		reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer manager.releaseReset(state)
+		executor.apply = func(context.Context, *Auth, ResetRequest) (ResetResult, error) {
+			return ResetResult{Result: "reset", RedeemedAt: redeemedAt}, nil
+		}
+		release := make(chan struct{})
+		executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+			<-release
+			clock.advance(time.Nanosecond)
+			return UsageFetchResult{Windows: []UsageWindow{old}, Resets: &CredentialResets{}}, nil
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"})
+			done <- err
+		}()
+		synctest.Wait()
+		optimistic := manager.UsageSnapshot("a")
+		if got := optimistic.Windows[0]; got.UsedPercent != 0 || !got.ResetsAt.Equal(redeemedAt.Add(5*time.Hour)) {
+			close(release)
+			<-done
+			t.Fatalf("old boundary not cleared optimistically: %+v", got)
+		}
+		close(release)
+		synctest.Wait()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		cached := manager.UsageSnapshot("a")
+		if got := cached.Windows[0]; got.UsedPercent != 0 || !got.ResetsAt.Equal(redeemedAt.Add(5*time.Hour)) {
+			t.Fatalf("lagging fetch restored old exhausted window: %+v", got)
+		}
+		if exhausted, _ := exhaustedResetWindows(cached, clock.now()); len(exhausted) != 0 {
+			t.Fatalf("old boundary treated as exhausted after reset: %v", exhausted)
+		}
+	})
+}
+
+func TestCodexResetGuardsFetchedWindowWithoutBoundary(t *testing.T) {
+	manager, executor, clock := setupResetManager(t, "codex")
+	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+	inventory.Windows = []UsageWindow{{Kind: "5h", Length: 18000, UsedPercent: 100, ResetsAt: clock.now().Add(2 * time.Hour)}}
+	seedResetAuth(t, manager, "a", "codex", inventory)
+	reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.releaseReset(state)
+	sent := clock.now()
+	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+		clock.advance(time.Nanosecond)
+		return UsageFetchResult{Windows: []UsageWindow{{Kind: "5h", Length: 18000, UsedPercent: 100}}, Resets: &CredentialResets{}}, nil
+	}
+	if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+		t.Fatal(err)
+	}
+	cached := manager.UsageSnapshot("a")
+	if got := cached.Windows[0]; got.UsedPercent != 0 || !got.ResetsAt.Equal(sent.Add(5*time.Hour)) {
+		t.Fatalf("fetched window without reset time replaced post-reset window: %+v", got)
+	}
+	if _, exhausted := rankUsage(manager.usageSnapshot("a"), "gpt-5", clock.now()); exhausted {
+		t.Fatal("fetched window without reset time marked credential exhausted")
+	}
+}
+
+func TestCodexResetAcceptsBoundarylessFetchWithoutKnownFreshWindow(t *testing.T) {
+	now := resetTestNow
+	fetched := UsageWindow{Kind: "5h", Length: 18000, UsedPercent: 100}
+	for _, tt := range []struct {
+		name   string
+		anchor time.Time
+		cached []UsageWindow
+	}{
+		{name: "no cached window", anchor: now},
+		{name: "no confirmed reset", cached: []UsageWindow{{Kind: "5h", Length: 18000, ResetsAt: now.Add(5 * time.Hour)}}},
+		{name: "cached boundary expired", anchor: now, cached: []UsageWindow{{Kind: "5h", Length: 18000, ResetsAt: now.Add(-time.Second)}}},
+		{name: "cached boundary predates reset", anchor: now, cached: []UsageWindow{{Kind: "5h", Length: 18000, ResetsAt: now.Add(5*time.Hour - 30*time.Second)}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := &usageEntry{CredentialUsage: CredentialUsage{Windows: tt.cached}, resetWindowAnchor: tt.anchor}
+			got := guardResetWindows(entry, []UsageWindow{fetched}, now)
+			if len(got) != 1 || got[0] != fetched {
+				t.Fatalf("boundaryless window not accepted without known fresh cache: %+v", got)
+			}
+		})
+	}
+}
+
+func TestCodexResetWithoutRedeemedAtAnchorsBeforeSend(t *testing.T) {
+	manager, executor, clock := setupResetManager(t, "codex")
+	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+	inventory.Windows = []UsageWindow{{Kind: "5h", Length: 18000, UsedPercent: 100, ResetsAt: clock.now().Add(2 * time.Hour)}}
+	seedResetAuth(t, manager, "a", "codex", inventory)
+	reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.releaseReset(state)
+	sent := clock.now()
+	executor.apply = func(context.Context, *Auth, ResetRequest) (ResetResult, error) {
+		clock.advance(2 * time.Minute)
+		return ResetResult{Result: "reset"}, nil
+	}
+	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+		clock.advance(time.Nanosecond)
+		return UsageFetchResult{Windows: inventory.Windows, Resets: &CredentialResets{}}, nil
+	}
+	if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+		t.Fatal(err)
+	}
+	cached := manager.usageSnapshot("a")
+	if !cached.resetWindowAnchor.Equal(sent) || !cached.resetConfirmedAt.Equal(sent.Add(2*time.Minute)) {
+		t.Fatalf("anchor=%v confirmed=%v, want send time and receipt time", cached.resetWindowAnchor, cached.resetConfirmedAt)
+	}
+	if got := cached.Windows[0]; got.UsedPercent != 0 || !got.ResetsAt.Equal(sent.Add(5*time.Hour)) {
+		t.Fatalf("fallback optimism or guard used receipt time: %+v", got)
+	}
+}
+
+func TestCodexResetIgnoresPreResetResponseHeaders(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		startedAt  func(time.Time) time.Time
+		wantUsed   float64
+		wantSignal string
+	}{
+		{"in flight before reset", func(at time.Time) time.Time { return at.Add(-time.Second) }, 0, ""},
+		{"started after reset", func(at time.Time) time.Time { return at.Add(time.Second) }, 100, "true"},
+		{"unknown start", func(time.Time) time.Time { return time.Time{} }, 100, "true"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			manager, executor, clock := setupResetManager(t, "codex")
+			inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+			inventory.Windows[0].Length = 604800
+			seedResetAuth(t, manager, "a", "codex", inventory)
+			reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer manager.releaseReset(state)
+			executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+				clock.advance(time.Nanosecond)
+				return UsageFetchResult{Windows: inventory.Windows, Resets: &CredentialResets{}}, nil
+			}
+			if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+				t.Fatal(err)
+			}
+			confirmedAt := manager.usageSnapshot("a").resetConfirmedAt
+			if confirmedAt.IsZero() || !confirmedAt.Equal(state.attempted) {
+				t.Fatalf("confirmed reset timestamp = %v, attempt = %v", confirmedAt, state.attempted)
+			}
+			ctx := internallogging.WithResponseHeadersHolder(context.Background())
+			internallogging.SetResponseHeaders(ctx, http.Header{
+				"X-Codex-Primary-Used-Percent":   {"100"},
+				"X-Codex-Primary-Window-Minutes": {"10080"},
+				"X-Codex-Primary-Reset-At":       {strconv.FormatInt(inventory.Windows[0].ResetsAt.Unix(), 10)},
+				"X-Codex-Limit-Reached":          {"true"},
+			})
+			manager.MarkResult(ctx, Result{AuthID: "a", Provider: "codex", Model: "gpt-5", Success: true, StartedAt: tt.startedAt(confirmedAt)})
+			if got := manager.UsageSnapshot("a").Windows[0].UsedPercent; got != tt.wantUsed {
+				t.Fatalf("used percent = %v, want %v", got, tt.wantUsed)
+			}
+			current, ok := manager.GetByID("a")
+			if !ok || current == nil {
+				t.Fatal("credential not found")
+			}
+			if got := current.Quota.Signals["X-Codex-Limit-Reached"]; got != tt.wantSignal {
+				t.Fatalf("credential quota signal = %q, want %q", got, tt.wantSignal)
+			}
+			if current.Quota.Exceeded {
+				t.Fatalf("credential cooled by response headers: %+v", current.Quota)
+			}
+			if state := current.ModelStates["gpt-5"]; state == nil || state.Quota.Signals["X-Codex-Limit-Reached"] != tt.wantSignal {
+				t.Fatalf("model quota observation = %+v, want %q", state, tt.wantSignal)
+			}
+		})
+	}
+}
+
+func TestCodexResetNewWindowAndHeadersApplyAsIs(t *testing.T) {
+	manager, executor, clock := setupResetManager(t, "codex")
+	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+	inventory.Windows[0].Length = 604800
+	auth := seedResetAuth(t, manager, "a", "codex", inventory)
+	reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.releaseReset(state)
+	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+		clock.advance(time.Nanosecond)
+		if executor.fetches.Load() == 3 {
+			return UsageFetchResult{Windows: []UsageWindow{{Kind: "7d", Length: 604800, UsedPercent: 15, ResetsAt: clock.now().Add(7 * 24 * time.Hour)}}, Resets: &CredentialResets{}}, nil
+		}
+		return UsageFetchResult{Windows: inventory.Windows, Resets: &CredentialResets{}}, nil
+	}
+	if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+		t.Fatal(err)
+	}
+	// A live header is authoritative even if it reports the pre-reset window.
+	oldReset := inventory.Windows[0].ResetsAt
+	manager.mu.Lock()
+	manager.observeUsageHeadersLocked(auth, http.Header{
+		"X-Codex-Primary-Used-Percent":   {"100"},
+		"X-Codex-Primary-Window-Minutes": {"10080"},
+		"X-Codex-Primary-Reset-At":       {strconv.FormatInt(oldReset.Unix(), 10)},
+	}, clock.now())
+	manager.mu.Unlock()
+	if got := manager.UsageSnapshot("a").Windows[0]; got.UsedPercent != 100 || !got.ResetsAt.Equal(oldReset) {
+		t.Fatalf("header did not override optimistic window: %+v", got)
+	}
+	clock.advance(UsageMinFetchInterval)
+	if _, err := manager.RefreshUsage(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.UsageSnapshot("a").Windows[0]; got.UsedPercent != 100 || !got.ResetsAt.Equal(oldReset) {
+		t.Fatalf("stale fetch overwrote live header: %+v", got)
+	}
+	clock.advance(UsageMinFetchInterval)
+	if _, err := manager.RefreshUsage(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.UsageSnapshot("a").Windows[0]; got.UsedPercent != 15 || !got.ResetsAt.After(inventory.Windows[0].ResetsAt) {
+		t.Fatalf("new fetched window not applied: %+v", got)
+	}
+}
+
+func TestCodexResetDiscardsPreResetHeaderVersionDuringFlight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		manager, executor, clock := setupResetManager(t, "codex")
+		inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+		inventory.Windows[0].Length = 604800
+		auth := seedResetAuth(t, manager, "a", "codex", inventory)
+		reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer manager.releaseReset(state)
+		release := make(chan struct{})
+		executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+			<-release
+			return UsageFetchResult{Windows: inventory.Windows, Resets: inventory.Resets}, nil
+		}
+		go func() { _, _ = manager.RefreshUsage(context.Background(), "a") }()
+		synctest.Wait()
+		manager.mu.Lock()
+		manager.observeUsageHeadersLocked(auth, http.Header{
+			"X-Codex-Primary-Used-Percent":   {"100"},
+			"X-Codex-Primary-Window-Minutes": {"10080"},
+			"X-Codex-Primary-Reset-At":       {strconv.FormatInt(inventory.Windows[0].ResetsAt.Unix(), 10)},
+		}, clock.now())
+		manager.mu.Unlock()
+		clock.advance(time.Second)
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"})
+			done <- err
+		}()
+		synctest.Wait()
+		if got := manager.UsageSnapshot("a").Windows[0]; got.UsedPercent != 0 {
+			t.Fatalf("pre-reset header blocked optimism: %+v", got)
+		}
+		close(release)
+		synctest.Wait()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if got := manager.UsageSnapshot("a").Windows[0]; got.UsedPercent != 0 || !got.ResetsAt.Equal(state.attempted.Add(7*24*time.Hour)) {
+			t.Fatalf("pre-reset header replaced optimism after old flight: %+v", got)
+		}
+	})
+}
+
+func TestCodexResetAcceptsLaterNaturalWindow(t *testing.T) {
+	manager, executor, clock := setupResetManager(t, "codex")
+	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+	inventory.Windows[0].Length = 604800
+	seedResetAuth(t, manager, "a", "codex", inventory)
+	reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.releaseReset(state)
+	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+		clock.advance(time.Nanosecond)
+		if executor.fetches.Load() == 1 {
+			return UsageFetchResult{Windows: inventory.Windows, Resets: &CredentialResets{}}, nil
+		}
+		return UsageFetchResult{Windows: []UsageWindow{{Kind: "7d", Length: 604800, UsedPercent: 35, ResetsAt: clock.now().Add(7 * 24 * time.Hour)}}, Resets: &CredentialResets{}}, nil
+	}
+	if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(5 * time.Hour)
+	if _, err := manager.RefreshUsage(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.UsageSnapshot("a").Windows[0]; got.UsedPercent != 35 || !got.ResetsAt.Equal(clock.now().Add(7*24*time.Hour)) {
+		t.Fatalf("later natural window rejected: %+v", got)
+	}
+}
+
+func TestClaudeResetDoesNotOptimisticallyChangeWindows(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		manager, executor, _ := setupResetManager(t, "claude")
+		inventory := resetTestEntry("claude", 100, 5*time.Hour, 0)
+		inventory.Windows[0].Length = 604800
+		seedResetAuth(t, manager, "a", "claude", inventory)
+		reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer manager.releaseReset(state)
+		release := make(chan struct{})
+		executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+			<-release
+			return UsageFetchResult{Windows: inventory.Windows, Resets: inventory.Resets}, nil
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", grantID: "grant"})
+			done <- err
+		}()
+		synctest.Wait()
+		if cached := manager.usageSnapshot("a"); cached.Windows[0] != inventory.Windows[0] || !cached.resetConfirmedAt.IsZero() {
+			t.Fatalf("Claude usage changed before fetch: %+v", cached)
+		}
+		close(release)
+		synctest.Wait()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if cached := manager.usageSnapshot("a"); cached.Windows[0] != inventory.Windows[0] || !cached.resetConfirmedAt.IsZero() {
+			t.Fatalf("Claude usage guarded after fetch: %+v", cached)
+		}
+	})
 }
 
 func TestResetLoopCodexLastChanceTriesNextCreditAfterRefusal(t *testing.T) {

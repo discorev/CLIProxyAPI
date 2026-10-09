@@ -609,6 +609,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					execCtx = newUpstreamAttemptContext(execCtx)
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					startRetry := time.Now()
+					startExec = startRetry
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
@@ -628,7 +629,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch}
+			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, StartedAt: startExec, Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch}
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
 				if ra := retryAfterFromError(errExec); ra != nil {
@@ -821,6 +822,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					execCtx = newUpstreamAttemptContext(execCtx)
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					startRetry := time.Now()
+					startExec = startRetry
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
@@ -840,7 +842,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: execOpts, SkipQuotaObservation: true, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch}
+			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, StartedAt: startExec, Options: execOpts, SkipQuotaObservation: true, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch}
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
 				if ra := retryAfterFromError(errExec); ra != nil {

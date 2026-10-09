@@ -62,6 +62,8 @@ type Result struct {
 	RouteModel string
 	// Success marks whether the execution succeeded.
 	Success bool
+	// StartedAt is when the executor was called (approximately send time); zero means unknown.
+	StartedAt time.Time
 	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay).
 	RetryAfter *time.Duration
 	// CredentialScope indicates that the failure affects the whole credential across models (e.g. Anthropic 5h/7d unified limits).
