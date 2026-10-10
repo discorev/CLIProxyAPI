@@ -111,11 +111,3 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 ## 许可证
 
 此项目根据 MIT 许可证授权 - 有关详细信息，请参阅 [LICENSE](LICENSE) 文件。
-
-## 写给所有中国网友的
-
-QQ 群：1081218164
-
-或
-
-Telegram 群：https://t.me/CLIProxyAPI
