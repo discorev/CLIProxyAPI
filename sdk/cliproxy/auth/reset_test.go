@@ -14,6 +14,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -1254,6 +1255,52 @@ func TestCodexResetIgnoresPreResetResponseHeaders(t *testing.T) {
 				t.Fatalf("model quota observation = %+v, want %q", state, tt.wantSignal)
 			}
 		})
+	}
+}
+
+func TestCodexResetIgnoresPreResetCanceledStreamHeaders(t *testing.T) {
+	manager, executor, clock := setupResetManager(t, "codex")
+	inventory := resetTestEntry("codex", 100, 5*time.Hour, 2*time.Hour)
+	inventory.Windows[0].Length = 604800
+	seedResetAuth(t, manager, "a", "codex", inventory)
+	reserved, applier, state, err := manager.reserveReset(context.Background(), "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.releaseReset(state)
+	executor.fetch = func(context.Context, *Auth) (UsageFetchResult, error) {
+		clock.advance(time.Nanosecond)
+		return UsageFetchResult{Windows: inventory.Windows, Resets: &CredentialResets{}}, nil
+	}
+	if _, _, err := manager.executeReset(context.Background(), reserved, applier, state, inventory, resetChoice{rule: "manual", creditID: "credit"}); err != nil {
+		t.Fatal(err)
+	}
+	cached := manager.usageSnapshot("a")
+	if cached.resetConfirmedAt.IsZero() || len(cached.Windows) != 1 || cached.Windows[0].UsedPercent != 0 {
+		t.Fatalf("reset optimism not seeded: %+v", cached)
+	}
+	ctx, cancel := context.WithCancel(internallogging.WithResponseHeadersHolder(context.Background()))
+	internallogging.SetResponseHeaders(ctx, http.Header{
+		"X-Codex-Primary-Used-Percent":   {"100"},
+		"X-Codex-Primary-Window-Minutes": {"10080"},
+		"X-Codex-Primary-Reset-At":       {strconv.FormatInt(inventory.Windows[0].ResetsAt.Unix(), 10)},
+		"X-Codex-Limit-Reached":          {"true"},
+	})
+	cancel()
+	auth, ok := manager.GetByID("a")
+	if !ok || auth == nil {
+		t.Fatal("credential not found")
+	}
+	manager.recordCanceledUpstreamCooldown(ctx, auth, "codex", "gpt-5", "gpt-5", cliproxyexecutor.Options{}, issue6503QuotaError{retryAfter: 10 * time.Minute}, false, cached.resetConfirmedAt.Add(-time.Second))
+	if got := manager.UsageSnapshot("a").Windows[0].UsedPercent; got != 0 {
+		t.Fatalf("pre-reset canceled stream overwrote reset usage: %v, want 0", got)
+	}
+	current, ok := manager.GetByID("a")
+	if !ok || current == nil || !current.Unavailable || current.NextRetryAfter.IsZero() {
+		t.Fatalf("upstream cooldown not retained: %+v", current)
+	}
+	if got := current.Quota.Signals["X-Codex-Limit-Reached"]; got != "" {
+		t.Fatalf("pre-reset quota signal recorded: %q", got)
 	}
 }
 
