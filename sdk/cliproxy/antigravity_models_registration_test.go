@@ -744,6 +744,17 @@ func TestAntigravityBlockedHintPersistenceDoesNotBlockPublicationOrOtherAccounts
 		svc.WaitAntigravityProbes()
 		t.Fatal("stalled persistence on authA blocked authB probe")
 	}
+	// The probe response is served before authB's catalog is applied. Wait for publication so the
+	// prefix Update below cannot land first and make the service discard authB's probe as stale.
+	deadline := time.Now().Add(time.Second)
+	for !GlobalModelRegistry().ClientSupportsModel(authB.ID, "gemini-3-flash") {
+		if time.Now().After(deadline) {
+			cancelLifetime()
+			svc.WaitAntigravityProbes()
+			t.Fatal("stalled persistence on authA blocked authB publication")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	select {
 	case <-authARefreshed:
 	case <-time.After(time.Second):
