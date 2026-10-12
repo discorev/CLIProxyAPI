@@ -75,6 +75,85 @@ func TestSubscriptionUsageFetchersUseExecutorHTTPTransport(t *testing.T) {
 	}
 }
 
+func TestCodexChatGPTBackendRequestsUseOuterToken(t *testing.T) {
+	for _, siwcToken := range []string{"api-openai-direct-token", ""} {
+		t.Run("siwc="+siwcToken, func(t *testing.T) {
+			auth := &cliproxyauth.Auth{
+				Provider:   "codex",
+				Attributes: map[string]string{"header:X-Test-Custom": "preserved"},
+				Metadata: map[string]any{
+					"use_siwc":     true,
+					"access_token": "outer-chatgpt-token",
+					"account_id":   "account-1",
+					"siwc":         map[string]any{"access_token": siwcToken},
+				},
+			}
+			executor := NewCodexExecutor(nil)
+			if siwcToken != "" {
+				req, err := http.NewRequest(http.MethodPost, "https://api.openai.com/v1/responses", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := executor.PrepareRequest(req, auth); err != nil {
+					t.Fatal(err)
+				}
+				if got := req.Header.Get("Authorization"); got != "Bearer api-openai-direct-token" {
+					t.Fatalf("generation authorization = %q", got)
+				}
+			}
+			for _, operation := range []string{"usage", "models", "reset"} {
+				t.Run(operation, func(t *testing.T) {
+					seen := make(map[string]bool)
+					ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", usageRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+						if req.URL.Host != "chatgpt.com" || req.Header.Get("Authorization") != "Bearer outer-chatgpt-token" || req.Header.Get("X-Test-Custom") != "preserved" {
+							t.Errorf("wrong backend endpoint/headers: %s %v", req.URL, req.Header)
+						}
+						seen[req.URL.Path] = true
+						body := `{}`
+						switch req.URL.Path {
+						case "/backend-api/wham/usage":
+							body = `{"rate_limit":{"primary_window":{"used_percent":6}}}`
+						case "/backend-api/subscriptions", "/backend-api/wham/rate-limit-reset-credits":
+						case "/backend-api/codex/models":
+							body = `{"models":[{"slug":"gpt-5.5"}]}`
+						case "/backend-api/wham/rate-limit-reset-credits/consume":
+							if req.Method != http.MethodPost {
+								t.Errorf("reset method = %s", req.Method)
+							}
+							body = `{"code":"reset","windows_reset":1}`
+						default:
+							t.Fatalf("unexpected backend URL: %s", req.URL)
+						}
+						return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+					}))
+					wantCalls := 1
+					switch operation {
+					case "usage":
+						wantCalls = 3
+						result, err := executor.FetchUsage(ctx, auth)
+						if err != nil || len(result.Windows) != 1 || result.Windows[0].UsedPercent != 6 {
+							t.Fatalf("usage = %+v, err = %v", result, err)
+						}
+					case "models":
+						models, err := executor.ListUpstreamModels(ctx, auth)
+						if err != nil || len(models) != 1 || models[0] != "gpt-5.5" {
+							t.Fatalf("models = %v, err = %v", models, err)
+						}
+					case "reset":
+						result, err := executor.ApplyReset(ctx, auth, cliproxyauth.ResetRequest{CreditID: "credit-1"})
+						if err != nil || result.Result != "reset" || result.NotSent {
+							t.Fatalf("reset = %+v, err = %v", result, err)
+						}
+					}
+					if len(seen) != wantCalls {
+						t.Fatalf("requests = %v, want %d", seen, wantCalls)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestSubscriptionUsageFetchFailures(t *testing.T) {
 	for _, provider := range []string{"claude", "codex"} {
 		for _, failUsage := range []bool{false, true} {

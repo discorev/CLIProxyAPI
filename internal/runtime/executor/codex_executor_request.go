@@ -96,6 +96,44 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 	return httpClient.Do(httpReq)
 }
 
+// prepareChatGPTBackendRequest uses outer credentials because SIWC tokens are scoped to api.openai.com.
+func (e *CodexExecutor) prepareChatGPTBackendRequest(req *http.Request, auth *cliproxyauth.Auth) error {
+	if req == nil {
+		return nil
+	}
+	var apiKey string
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+		apiKey = attrs["api_key"]
+		if apiKey == "" && auth.Metadata != nil {
+			apiKey, _ = auth.Metadata["access_token"].(string)
+		}
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	} else {
+		req.Header.Del("Authorization")
+	}
+	util.ApplyCustomHeadersFromAttrs(req, attrs)
+	return nil
+}
+
+func (e *CodexExecutor) chatGPTBackendHttpRequest(ctx context.Context, auth *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
+	if req == nil {
+		return nil, fmt.Errorf("codex executor: request is nil")
+	}
+	if ctx == nil {
+		ctx = req.Context()
+	}
+	httpReq := req.WithContext(ctx)
+	if err := e.prepareChatGPTBackendRequest(httpReq, auth); err != nil {
+		return nil, err
+	}
+	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+	return httpClient.Do(httpReq)
+}
+
 func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte, headerSets ...http.Header) (*http.Request, []byte, error) {
 	var headers http.Header
 	if len(headerSets) > 0 {

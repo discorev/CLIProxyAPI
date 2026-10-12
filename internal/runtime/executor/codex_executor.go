@@ -27,15 +27,15 @@ func (e *CodexExecutor) modelLevelCooling() bool {
 }
 
 func (e *CodexExecutor) FetchUsage(ctx context.Context, auth *cliproxyauth.Auth) (cliproxyauth.UsageFetchResult, error) {
-	return helps.FetchCodexUsage(ctx, auth, e.HttpRequest)
+	return helps.FetchCodexUsage(ctx, auth, e.chatGPTBackendHttpRequest)
 }
 
 func (e *CodexExecutor) ListUpstreamModels(ctx context.Context, auth *cliproxyauth.Auth) ([]string, error) {
-	return helps.FetchCodexModelList(ctx, auth, e.HttpRequest)
+	return helps.FetchCodexModelList(ctx, auth, e.chatGPTBackendHttpRequest)
 }
 
 func (e *CodexExecutor) ApplyReset(ctx context.Context, auth *cliproxyauth.Auth, request cliproxyauth.ResetRequest) (cliproxyauth.ResetResult, error) {
-	return helps.ApplyCodexReset(ctx, auth, request, e.resetBaseURL, helps.ResetHTTPTransport(e.cfg, e.PrepareRequest))
+	return helps.ApplyCodexReset(ctx, auth, request, e.resetBaseURL, helps.ResetHTTPTransport(e.cfg, e.prepareChatGPTBackendRequest))
 }
 
 // SupportsApplyPatch reports the actual executor contract, independent of its provider name.
