@@ -105,13 +105,15 @@ func TestRestrictedModelFilterFailsClosedExceptConfiguredModels(t *testing.T) {
 }
 
 func TestConfiguredAPIKeyModelsRemainAvailable(t *testing.T) {
-	for _, provider := range []string{"claude", "codex"} {
+	for _, provider := range []string{"claude", "codex", "meta"} {
 		t.Run(provider, func(t *testing.T) {
 			id := provider + "-restricted-config-test"
 			cfg := &config.Config{}
 			name := "configured-restricted-model"
 			if provider == "claude" {
 				cfg.ClaudeKey = []config.ClaudeKey{{APIKey: "fake-key", Models: []internalconfig.ClaudeModel{{Name: name}}}}
+			} else if provider == "meta" {
+				cfg.MetaKey = []config.MetaKey{{APIKey: "fake-key", Models: []internalconfig.CodexModel{{Name: name}}}}
 			} else {
 				cfg.CodexKey = []config.CodexKey{{APIKey: "fake-key", Models: []internalconfig.CodexModel{{Name: name}}}}
 			}
@@ -137,7 +139,7 @@ func TestConfiguredAPIKeyModelsRemainAvailable(t *testing.T) {
 }
 
 func TestEmptyAPIKeyModelListDoesNotGrantRestrictedCatalogModels(t *testing.T) {
-	for _, provider := range []string{"claude", "codex"} {
+	for _, provider := range []string{"claude", "codex", "meta"} {
 		t.Run(provider, func(t *testing.T) {
 			id := provider + "-empty-model-list-test"
 			cfg := &config.Config{}
@@ -145,6 +147,9 @@ func TestEmptyAPIKeyModelListDoesNotGrantRestrictedCatalogModels(t *testing.T) {
 			if provider == "claude" {
 				cfg.ClaudeKey = []config.ClaudeKey{{APIKey: "fake-key"}}
 				modelID = registry.GetClaudeModels()[0].ID
+			} else if provider == "meta" {
+				cfg.MetaKey = []config.MetaKey{{APIKey: "fake-key"}}
+				modelID = registry.GetMetaModels()[0].ID
 			} else {
 				cfg.CodexKey = []config.CodexKey{{APIKey: "fake-key"}}
 				modelID = registry.GetCodexProModels()[0].ID
@@ -579,25 +584,6 @@ func TestRestrictedMetaCatalogHiddenUntilGranted(t *testing.T) {
 	}
 }
 
-func TestConfiguredMetaAPIKeyDoesNotGrantRestrictedCatalogModels(t *testing.T) {
-	const id = "restricted-meta-config-test"
-	const modelID = "muse-wonder-full-1.0"
-	service := &Service{cfg: &config.Config{MetaKey: []config.MetaKey{{APIKey: "fake-key", Models: []internalconfig.CodexModel{{Name: modelID}}}}}}
-	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
-		return map[string]struct{}{modelID: {}}
-	}
-	auth := &coreauth.Auth{
-		ID: id, Provider: "meta", Status: coreauth.StatusActive,
-		Attributes: map[string]string{"api_key": "fake-key", "source": "config:meta", "config_index": "0"},
-	}
-	reg := GlobalModelRegistry()
-	t.Cleanup(func() { reg.UnregisterClient(id) })
-	service.registerModelsForAuth(context.Background(), auth)
-	if containsModelID(reg.GetModelsForClient(id), modelID) || len(service.explicitRestrictedModelIDs(auth)) != 0 {
-		t.Fatal("configured Meta API key granted a restricted catalog model")
-	}
-}
-
 func TestRestrictedPluginModelsCannotBypassCatalogAccess(t *testing.T) {
 	for _, provider := range []string{"claude", "codex"} {
 		for _, mode := range []string{"static", "auth-bound"} {
@@ -803,12 +789,14 @@ func TestRestrictedMetaIdentityPreservesAccountAcrossKeyRemint(t *testing.T) {
 }
 
 func TestRestrictedAPIKeyAliasUsesConfiguredUpstreamName(t *testing.T) {
-	for _, provider := range []string{"claude", "codex"} {
+	for _, provider := range []string{"claude", "codex", "meta"} {
 		t.Run(provider, func(t *testing.T) {
 			const upstream = "restricted-upstream"
 			cfg := &config.Config{}
 			if provider == "claude" {
 				cfg.ClaudeKey = []config.ClaudeKey{{APIKey: "fake-key", Models: []internalconfig.ClaudeModel{{Name: upstream, Alias: "public-alias"}}}}
+			} else if provider == "meta" {
+				cfg.MetaKey = []config.MetaKey{{APIKey: "fake-key", Models: []internalconfig.CodexModel{{Name: upstream, Alias: "public-alias"}}}}
 			} else {
 				cfg.CodexKey = []config.CodexKey{{APIKey: "fake-key", Models: []internalconfig.CodexModel{{Name: upstream, Alias: "public-alias"}}}}
 			}
@@ -831,6 +819,8 @@ func TestRestrictedAPIKeyAliasUsesConfiguredUpstreamName(t *testing.T) {
 			aliasOnly := &Service{cfg: &config.Config{}}
 			if provider == "claude" {
 				aliasOnly.cfg.ClaudeKey = []config.ClaudeKey{{APIKey: "fake-key", Models: []internalconfig.ClaudeModel{{Name: "ordinary-upstream", Alias: upstream}}}}
+			} else if provider == "meta" {
+				aliasOnly.cfg.MetaKey = []config.MetaKey{{APIKey: "fake-key", Models: []internalconfig.CodexModel{{Name: "ordinary-upstream", Alias: upstream}}}}
 			} else {
 				aliasOnly.cfg.CodexKey = []config.CodexKey{{APIKey: "fake-key", Models: []internalconfig.CodexModel{{Name: "ordinary-upstream", Alias: upstream}}}}
 			}

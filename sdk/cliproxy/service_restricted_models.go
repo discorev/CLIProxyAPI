@@ -179,6 +179,12 @@ func (s *Service) explicitRestrictedModelIDs(auth *coreauth.Auth) map[string]str
 				names = append(names, model.Name)
 			}
 		}
+	case "meta":
+		if entry := s.resolveConfigMetaKey(auth); entry != nil {
+			for _, model := range entry.Models {
+				names = append(names, model.Name)
+			}
+		}
 	}
 	ids := make(map[string]struct{}, len(names))
 	for _, name := range names {
