@@ -44,7 +44,7 @@ func TestOAuthModelListRequests(t *testing.T) {
 						_, _ = fmt.Fprint(w, `{"data":[{"id":"claude-mythos-5-1"}],"has_more":false}`)
 					}
 				} else if provider == "meta" {
-					if req.URL.Path != "/muse-code/models" || req.Header.Get("Accept") != "application/json" {
+					if req.URL.Path != "/muse-code/models" || req.Header.Get("Accept") != "application/json" || req.Header.Get("User-Agent") != metaUserAgent || req.Header.Get("X-Client-Id") != "tbh:tui" {
 						t.Errorf("wrong Meta model request: %s %v", req.URL, req.Header)
 					}
 					_, _ = fmt.Fprint(w, `{"object":"list","data":[{"id":" muse-spark-1.3 "},{"id":"muse-wonder-full-1.0","metadata":{"muse-code":{"is_hidden":true}}},{"id":" "},{}]}`)
@@ -85,6 +85,36 @@ func TestOAuthModelListRequests(t *testing.T) {
 				t.Fatalf("models = %v, err = %v, calls = %d; want %v, %d", models, err, calls, want, wantCalls)
 			}
 		})
+	}
+}
+
+func TestMetaModelListDoesNotMintAPIKey(t *testing.T) {
+	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		t.Error("model listing called the mint endpoint")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer mintServer.Close()
+	t.Setenv("META_MINT_URL", mintServer.URL)
+
+	calls := 0
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", usageRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return nil, fmt.Errorf("unexpected model list request")
+	}))
+	auth := &cliproxyauth.Auth{
+		Provider: "meta",
+		Metadata: map[string]any{"dca_token": "dca:fake", "auth_kind": "oauth"},
+	}
+	before := auth.Clone()
+	ids, err := NewMetaExecutor(nil).ListUpstreamModels(ctx, auth)
+	if err == nil || err.Error() != "meta model list: no minted API key" || len(ids) != 0 {
+		t.Fatalf("DCA-only listing: models=%v err=%v", ids, err)
+	}
+	if calls != 0 {
+		t.Fatalf("model listing made %d requests without a minted API key", calls)
+	}
+	if !reflect.DeepEqual(auth, before) {
+		t.Fatal("model listing mutated the DCA-only auth")
 	}
 }
 
