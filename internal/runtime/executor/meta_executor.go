@@ -83,6 +83,13 @@ func (e *MetaExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth,
 	return httpClient.Do(httpReq)
 }
 
+// FetchUsage uses the DCA bearer, never the generation key or mint/refresh path.
+func (e *MetaExecutor) FetchUsage(ctx context.Context, auth *cliproxyauth.Auth) (cliproxyauth.UsageFetchResult, error) {
+	return helps.FetchMetaUsage(ctx, auth, func(ctx context.Context, auth *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
+		return helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0).Do(req)
+	})
+}
+
 // Refresh mints an API key from a DCA token if needed.
 func (e *MetaExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	log.Debugf("meta executor: refresh called")

@@ -137,3 +137,37 @@ func TestCredentialUsageAPIEmptyArray(t *testing.T) {
 		t.Fatalf("empty response: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestCredentialUsageListsMetaAndXAI(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	for _, provider := range []string{"meta", "xai"} {
+		for _, apiKey := range []bool{false, true} {
+			auth := &coreauth.Auth{ID: provider + map[bool]string{false: "-oauth", true: "-key"}[apiKey], Provider: provider, Metadata: map[string]any{"auth_kind": "oauth", "access_token": "fake", "dca_token": "fake"}}
+			if apiKey {
+				auth.Attributes = map[string]string{"auth_kind": "apikey", "api_key": "fake"}
+			}
+			if _, err := manager.Register(context.Background(), auth); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	handler := &Handler{authManager: manager}
+	router := gin.New()
+	router.GET("/v8/management/credentials/usage", handler.GetCredentialUsage)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v8/management/credentials/usage", nil))
+	var rows []credentialUsageResponse
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &rows) != nil || len(rows) != 2 {
+		t.Fatalf("response: %d %s", rec.Code, rec.Body.String())
+	}
+	seen := make(map[string]bool)
+	for _, row := range rows {
+		seen[row.Provider] = true
+		if row.AuthID != row.Provider+"-oauth" || row.Resets != nil || row.Windows == nil || len(row.Windows) != 0 {
+			t.Fatal("wrong OAuth usage shape")
+		}
+	}
+	if !seen["meta"] || !seen["xai"] || strings.Contains(rec.Body.String(), "fake") {
+		t.Fatal("missing providers or leaked credential")
+	}
+}

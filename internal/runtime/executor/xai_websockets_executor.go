@@ -1851,6 +1851,13 @@ func (e *XAIAutoExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Au
 	return e.httpExec.HttpRequest(ctx, auth, req)
 }
 
+func (e *XAIAutoExecutor) FetchUsage(ctx context.Context, auth *cliproxyauth.Auth) (cliproxyauth.UsageFetchResult, error) {
+	if e == nil || e.httpExec == nil {
+		return cliproxyauth.UsageFetchResult{}, fmt.Errorf("xai auto executor: http executor is nil")
+	}
+	return e.httpExec.FetchUsage(ctx, auth)
+}
+
 func (e *XAIAutoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	if e == nil || e.httpExec == nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("xai auto executor: executor is nil")

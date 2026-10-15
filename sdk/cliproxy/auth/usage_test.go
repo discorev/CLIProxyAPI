@@ -26,8 +26,12 @@ func (e *fakeUsageExecutor) FetchUsage(ctx context.Context, auth *Auth) (UsageFe
 
 func registerUsageAuth(t *testing.T, manager *Manager, id, provider string) *Auth {
 	t.Helper()
+	metadata := map[string]any{"access_token": "fake-token"}
+	if provider == "meta" {
+		metadata["auth_kind"], metadata["dca_token"] = "oauth", "fake-dca"
+	}
 	auth, err := manager.Register(context.Background(), &Auth{
-		ID: id, Provider: provider, Metadata: map[string]interface{}{"access_token": "fake-token"},
+		ID: id, Provider: provider, Metadata: metadata,
 	})
 	if err != nil {
 		t.Fatal(err)

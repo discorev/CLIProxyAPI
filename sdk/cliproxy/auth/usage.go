@@ -57,14 +57,21 @@ var (
 	ErrUsageNotFetchable = errors.New("credential does not support subscription usage")
 )
 
-// UsageFetchable excludes API keys even if they also carry OAuth metadata.
+// UsageFetchable excludes API keys, except the LLM key minted by Meta OAuth.
 func UsageFetchable(auth *Auth) bool {
-	if auth == nil || strings.TrimSpace(auth.Attributes["api_key"]) != "" {
+	if auth == nil {
 		return false
 	}
-	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
-	token, _ := auth.Metadata["access_token"].(string)
-	return (provider == "claude" || provider == "codex") && strings.TrimSpace(token) != ""
+	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
+	case "meta":
+		token, _ := auth.Metadata["dca_token"].(string)
+		return auth.AuthKind() == AuthKindOAuth && strings.TrimSpace(token) != ""
+	case "claude", "codex", "xai":
+		token, _ := auth.Metadata["access_token"].(string)
+		return strings.TrimSpace(auth.Attributes["api_key"]) == "" && strings.TrimSpace(token) != ""
+	default:
+		return false
+	}
 }
 
 type usageEntry struct {

@@ -85,7 +85,11 @@ func FetchCodexUsage(ctx context.Context, auth *cliproxyauth.Auth, request Usage
 }
 
 func fetchUsageJSON(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest, endpoint string, headers http.Header) (json.RawMessage, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	return doUsageJSON(ctx, auth, request, http.MethodGet, endpoint, headers, nil)
+}
+
+func doUsageJSON(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest, method, endpoint string, headers http.Header, body io.Reader) (json.RawMessage, error) {
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return nil, err
 	}
@@ -107,17 +111,17 @@ func fetchUsageJSON(ctx context.Context, auth *cliproxyauth.Auth, request UsageH
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, &cliproxyauth.UsageHTTPError{StatusCode: response.StatusCode, RetryAfter: usageRetryAfter(response.Header.Get("Retry-After"), cliproxyauth.UsageFetchOptionsFromContext(ctx).Now)}
 	}
-	body, errRead := io.ReadAll(io.LimitReader(response.Body, usageResponseMaxBytes+1))
-	if len(body) > usageResponseMaxBytes {
+	responseBody, errRead := io.ReadAll(io.LimitReader(response.Body, usageResponseMaxBytes+1))
+	if len(responseBody) > usageResponseMaxBytes {
 		return nil, errors.New("usage response exceeds 4 MiB")
 	}
 	if errRead != nil {
 		return nil, errors.New("failed to read response")
 	}
-	if !json.Valid(body) {
+	if !json.Valid(responseBody) {
 		return nil, errors.New("invalid JSON response")
 	}
-	return body, nil
+	return responseBody, nil
 }
 
 func setUsageAncillaryError(result *cliproxyauth.UsageFetchResult, err error) {
