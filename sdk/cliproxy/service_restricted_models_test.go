@@ -622,12 +622,15 @@ func TestRestrictedModelFetchIgnoresListerAuthMutation(t *testing.T) {
 }
 
 func TestRestrictedPluginModelsCannotBypassCatalogAccess(t *testing.T) {
-	for _, provider := range []string{"claude", "codex"} {
+	for _, provider := range []string{"claude", "codex", "meta"} {
 		for _, mode := range []string{"static", "auth-bound"} {
 			t.Run(provider+"/"+mode, func(t *testing.T) {
 				const restricted = "restricted-plugin-model"
 				id := provider + "-" + mode + "-restricted-plugin-test"
 				auth := restrictedTestAuth(provider, id)
+				if provider == "meta" {
+					auth.Metadata["email"] = "meta@example.com"
+				}
 				service := &Service{cfg: &config.Config{}, pluginHost: pluginhost.New()}
 				service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
 					return map[string]struct{}{restricted: {}}

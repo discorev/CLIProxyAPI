@@ -64,7 +64,16 @@ func (e *MetaExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth
 }
 
 func (e *MetaExecutor) ListUpstreamModels(ctx context.Context, auth *cliproxyauth.Auth) ([]string, error) {
-	return helps.FetchMetaModelList(ctx, auth, e.HttpRequest)
+	// Key minting and persistence belong to the manager's request path.
+	if _, token := metaCreds(auth); token == "" {
+		return nil, fmt.Errorf("meta model list: no minted API key")
+	}
+	return helps.FetchMetaModelList(ctx, auth, func(ctx context.Context, auth *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
+		if err := e.PrepareRequest(req, e.enrichAuth(auth)); err != nil {
+			return nil, err
+		}
+		return helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0).Do(req)
+	})
 }
 
 // HttpRequest injects Meta credentials into the request and executes it.
