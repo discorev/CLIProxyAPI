@@ -2,7 +2,9 @@ package cliproxy
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -511,6 +513,91 @@ func TestRestrictedCodexBuiltinHiddenUntilGranted(t *testing.T) {
 	}
 }
 
+func TestRestrictedMetaCatalogHiddenUntilGranted(t *testing.T) {
+	const id = "restricted-meta-catalog-test"
+	models := registry.GetMetaModels()
+	if len(models) == 0 {
+		t.Fatal("missing Meta catalog models")
+	}
+	modelID := models[0].ID
+	auth := restrictedTestAuth("meta", id)
+	auth.Attributes["api_key"] = "fake-api-key"
+	auth.Metadata["email"] = "meta@example.com"
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	manager.RegisterExecutor(runtimeexecutor.NewMetaExecutor(nil))
+	var calls atomic.Int32
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", restrictedRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "https://api.meta.ai/muse-code/models" || req.Header.Get("Authorization") != "Bearer fake-api-key" {
+			t.Errorf("unexpected Meta model request: %s", req.URL)
+		}
+		body := `{"object":"list","data":[]}`
+		if calls.Add(1) == 2 {
+			body = fmt.Sprintf(`{"object":"list","data":[{"id":%q,"metadata":{"muse-code":{"is_hidden":true}}}]}`, modelID)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	}))
+	now := time.Date(2026, time.October, 7, 12, 0, 0, 0, time.UTC)
+	service := &Service{cfg: &config.Config{}, coreManager: manager}
+	service.restrictedAccess.now = func() time.Time { return now }
+	service.restrictedAccess.restrictedIDs = func(provider string) map[string]struct{} {
+		if provider != "meta" {
+			t.Errorf("restricted catalog provider = %q, want meta", provider)
+		}
+		return map[string]struct{}{modelID: {}}
+	}
+	reg := GlobalModelRegistry()
+	t.Cleanup(func() { reg.UnregisterClient(id) })
+	service.registerModelsForAuth(ctx, auth)
+	if containsModelID(reg.GetModelsForClient(id), modelID) {
+		t.Fatal("catalog-restricted Meta model visible with unknown access")
+	}
+	fetch := func() {
+		t.Helper()
+		service.queueRestrictedModelFetch(ctx, auth)
+		service.restrictedAccess.mu.RLock()
+		entry := service.restrictedAccess.entries[id]
+		if entry == nil {
+			service.restrictedAccess.mu.RUnlock()
+			t.Fatal("Meta OAuth credential did not queue a model list fetch")
+		}
+		done := entry.done
+		service.restrictedAccess.mu.RUnlock()
+		<-done
+	}
+	fetch()
+	if containsModelID(reg.GetModelsForClient(id), modelID) {
+		t.Fatal("unlisted Meta model was registered")
+	}
+	before := reg.ClientRegistrationEpoch(id)
+	now = now.Add(restrictedModelRefreshInterval)
+	fetch()
+	if calls.Load() != 2 || !containsModelID(reg.GetModelsForClient(id), modelID) || reg.ClientRegistrationEpoch(id) <= before {
+		t.Fatal("listed Meta model did not register after refresh")
+	}
+}
+
+func TestConfiguredMetaAPIKeyDoesNotGrantRestrictedCatalogModels(t *testing.T) {
+	const id = "restricted-meta-config-test"
+	const modelID = "muse-wonder-full-1.0"
+	service := &Service{cfg: &config.Config{MetaKey: []config.MetaKey{{APIKey: "fake-key", Models: []internalconfig.CodexModel{{Name: modelID}}}}}}
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+		return map[string]struct{}{modelID: {}}
+	}
+	auth := &coreauth.Auth{
+		ID: id, Provider: "meta", Status: coreauth.StatusActive,
+		Attributes: map[string]string{"api_key": "fake-key", "source": "config:meta", "config_index": "0"},
+	}
+	reg := GlobalModelRegistry()
+	t.Cleanup(func() { reg.UnregisterClient(id) })
+	service.registerModelsForAuth(context.Background(), auth)
+	if containsModelID(reg.GetModelsForClient(id), modelID) || len(service.explicitRestrictedModelIDs(auth)) != 0 {
+		t.Fatal("configured Meta API key granted a restricted catalog model")
+	}
+}
+
 func TestRestrictedPluginModelsCannotBypassCatalogAccess(t *testing.T) {
 	for _, provider := range []string{"claude", "codex"} {
 		for _, mode := range []string{"static", "auth-bound"} {
@@ -661,6 +748,57 @@ func TestRestrictedModelIdentityPreservesKnownAccountAcrossTokenRefresh(t *testi
 		if got := restrictedModelIdentity(other); got == original {
 			t.Errorf("%s account replacement kept access identity", provider)
 		}
+	}
+}
+
+func TestRestrictedMetaIdentityPreservesAccountAcrossKeyRemint(t *testing.T) {
+	auth := restrictedTestAuth(" META ", "meta-stable-account-test")
+	auth.Attributes["api_key"] = "fake-old-key"
+	auth.Metadata["api_key"] = "fake-old-key"
+	auth.Metadata["access_token"] = "fake-old-key"
+	auth.Metadata["email"] = " Account@Example.COM "
+	auth.Metadata["dca_token"] = " dca:fake-stable-token "
+	original := restrictedModelIdentity(auth)
+	if original != "meta:account@example.com" {
+		t.Fatalf("Meta account identity = %q", original)
+	}
+	rotated := auth.Clone()
+	rotated.Attributes["api_key"] = "fake-new-key"
+	rotated.Attributes["access_token"] = "fake-new-key"
+	rotated.Metadata["api_key"] = "fake-new-key"
+	rotated.Metadata["access_token"] = "fake-new-key"
+	rotated.Metadata["email"] = "account@example.com"
+	if got := restrictedModelIdentity(rotated); got != original {
+		t.Fatalf("Meta key remint changed access identity: %q != %q", got, original)
+	}
+	other := auth.Clone()
+	other.Metadata["email"] = "other@example.com"
+	if got := restrictedModelIdentity(other); got == original {
+		t.Fatal("Meta account replacement kept access identity")
+	}
+	wantHash := fmt.Sprintf("meta:%x", sha256.Sum256([]byte("dca:fake-stable-token")))
+	for _, candidate := range []*coreauth.Auth{auth.Clone(), rotated.Clone()} {
+		delete(candidate.Metadata, "email")
+		if got := restrictedModelIdentity(candidate); got != wantHash {
+			t.Fatalf("Meta DCA fallback identity = %q, want %q", got, wantHash)
+		}
+		candidate.Metadata["dca_token"] = "dca:another-account"
+		if got := restrictedModelIdentity(candidate); got == wantHash {
+			t.Fatal("Meta DCA account replacement kept access identity")
+		}
+		delete(candidate.Metadata, "dca_token")
+		if got := restrictedModelIdentity(candidate); got != "" {
+			t.Fatalf("minted key without email or DCA token has identity %q", got)
+		}
+		candidate.Metadata["access_token"] = " dca:fake-stable-token "
+		if got := restrictedModelIdentity(candidate); got != wantHash {
+			t.Fatalf("legacy Meta DCA fallback identity = %q, want %q", got, wantHash)
+		}
+	}
+	apiKey := auth.Clone()
+	apiKey.Attributes = map[string]string{"api_key": "fake-config-key", "source": "config:meta", "config_index": "0"}
+	if got := restrictedModelIdentity(apiKey); got != "" {
+		t.Fatalf("config Meta API key has OAuth identity %q", got)
 	}
 }
 

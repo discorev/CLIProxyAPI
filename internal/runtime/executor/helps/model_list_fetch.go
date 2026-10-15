@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -12,6 +13,31 @@ import (
 )
 
 const codexModelListClientVersion = "99.0.0"
+
+// FetchMetaModelList lists every model visible to this OAuth account, including hidden models.
+func FetchMetaModelList(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest) ([]string, error) {
+	headers := make(http.Header)
+	headers.Set("Accept", "application/json")
+	body, errFetch := fetchUsageJSON(ctx, auth, request, "https://api.meta.ai/muse-code/models", headers)
+	if errFetch != nil {
+		return nil, fmt.Errorf("meta model list: %w", errFetch)
+	}
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if errDecode := json.Unmarshal(body, &result); errDecode != nil || result.Data == nil {
+		return nil, errors.New("meta model list: invalid data")
+	}
+	models := make([]string, 0, len(result.Data))
+	for _, model := range result.Data {
+		if id := strings.TrimSpace(model.ID); id != "" {
+			models = append(models, id)
+		}
+	}
+	return models, nil
+}
 
 // FetchClaudeModelList lists every model visible to this OAuth credential.
 func FetchClaudeModelList(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest) ([]string, error) {
