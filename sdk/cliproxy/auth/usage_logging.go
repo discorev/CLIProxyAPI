@@ -30,6 +30,10 @@ func usageAccountChange(previous, current *Auth) (reason, changes string) {
 		keys = []string{"email", "account_uuid", "organization_uuid"}
 	case "codex":
 		keys = []string{"account_id", "email"}
+	case "meta":
+		keys = []string{"email"}
+	case "xai":
+		keys = []string{"sub", "email"}
 	default:
 		return "", ""
 	}
@@ -117,7 +121,7 @@ func logUsageFetch(auth *Auth, trigger string, entry *usageEntry, errFetch error
 		// retain verbatim diagnostics in the cache and at opt-in DEBUG only:
 		// their error strings can include values from the response.
 		if errFetch != nil {
-			for _, provider := range []string{"claude", "codex"} {
+			for _, provider := range []string{"claude", "codex", "meta", "xai"} {
 				if strings.HasPrefix(errFetch.Error(), "parse "+provider+" usage:") {
 					log.WithFields(fields).Debug("usage fetch parse failed")
 					fields["error"] = "invalid " + provider + " usage response"

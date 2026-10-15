@@ -90,7 +90,7 @@ func (m *Manager) sweepResets(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if !UsageFetchable(auth) || auth.Disabled || auth.Status == StatusDisabled {
+		if provider := resetProvider(auth); (provider != "claude" && provider != "codex") || !UsageFetchable(auth) || auth.Disabled || auth.Status == StatusDisabled {
 			continue
 		}
 		m.usage.mu.RLock()

@@ -130,5 +130,10 @@ func (e *XAIExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, 
 	return httpClient.Do(httpReq)
 }
 
+// FetchUsage reads the OAuth subscription from the CLI chat proxy.
+func (e *XAIExecutor) FetchUsage(ctx context.Context, auth *cliproxyauth.Auth) (cliproxyauth.UsageFetchResult, error) {
+	return helps.FetchXAIUsage(ctx, auth, e.HttpRequest)
+}
+
 // SupportsApplyPatch reports the actual executor contract, independent of its provider name.
 func (e *XAIExecutor) SupportsApplyPatch() bool { return e != nil }

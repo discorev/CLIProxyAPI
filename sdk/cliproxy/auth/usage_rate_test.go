@@ -48,7 +48,7 @@ func TestUsageRateSharedFetchFloor(t *testing.T) {
 }
 
 func TestUsageRate429LaddersSharedWithManualRefresh(t *testing.T) {
-	for _, provider := range []string{"claude", "codex"} {
+	for _, provider := range []string{"claude", "codex", "meta", "xai"} {
 		for _, ancillary := range []bool{false, true} {
 			t.Run(provider+map[bool]string{false: "/usage", true: "/ancillary"}[ancillary], func(t *testing.T) {
 				manager, executor, clock := setupResetManager(t, provider)
@@ -65,7 +65,7 @@ func TestUsageRate429LaddersSharedWithManualRefresh(t *testing.T) {
 					return UsageFetchResult{}, failure
 				}
 				ladder := []time.Duration{5 * time.Minute, 15 * time.Minute, time.Hour, time.Hour}
-				if provider == "claude" {
+				if provider == "claude" || provider == "meta" {
 					ladder = []time.Duration{20 * time.Minute, 40 * time.Minute, time.Hour, time.Hour}
 				}
 				for i, delay := range ladder {

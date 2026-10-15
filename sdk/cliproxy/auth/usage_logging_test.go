@@ -290,7 +290,7 @@ func TestUsageInvalidatedFlightDoesNotLogFetched(t *testing.T) {
 }
 
 func TestUsageParseFailureLogsSafeInfoAndVerbatimDebug(t *testing.T) {
-	for _, provider := range []string{"claude", "codex"} {
+	for _, provider := range []string{"claude", "codex", "meta", "xai"} {
 		for _, level := range []log.Level{log.InfoLevel, log.DebugLevel} {
 			t.Run(provider+"/"+level.String(), func(t *testing.T) {
 				hook := setupTestLoggerHook(t)

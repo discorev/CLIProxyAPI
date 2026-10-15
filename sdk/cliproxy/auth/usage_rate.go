@@ -81,8 +81,11 @@ func applyUsageFetchRate(entry *usageEntry, auth *Auth, result UsageFetchResult,
 			break
 		}
 		ladder := []time.Duration{UsageCodex429Initial, UsageCodex429Second, Usage429Maximum}
-		if strings.EqualFold(auth.Provider, "claude") {
+		switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
+		case "claude", "meta":
 			ladder = []time.Duration{UsageClaude429Initial, UsageClaude429Second, Usage429Maximum}
+		case "codex", "xai":
+			// Both use the 5 -> 15 -> 60 minute ladder above.
 		}
 		delay := min(max(ladder[min(entry.rateLimitLevel, len(ladder)-1)], limit.RetryAfter), Usage429Maximum)
 		entry.rateLimitLevel = min(entry.rateLimitLevel+1, len(ladder)-1)
