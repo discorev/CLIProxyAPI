@@ -584,6 +584,43 @@ func TestRestrictedMetaCatalogHiddenUntilGranted(t *testing.T) {
 	}
 }
 
+func TestRestrictedModelFetchIgnoresListerAuthMutation(t *testing.T) {
+	const id = "restricted-meta-dca-only-test"
+	modelID := registry.GetMetaModels()[0].ID
+	auth := &coreauth.Auth{
+		ID: id, Provider: "meta", Status: coreauth.StatusActive,
+		Attributes: map[string]string{"auth_kind": "oauth"},
+		Metadata:   map[string]any{"auth_kind": "oauth", "dca_token": "dca:fake-token"},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: &config.Config{}, coreManager: manager}
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} {
+		return map[string]struct{}{modelID: {}}
+	}
+	reg := GlobalModelRegistry()
+	t.Cleanup(func() { reg.UnregisterClient(id) })
+	service.registerModelsForAuth(context.Background(), auth)
+	if containsModelID(reg.GetModelsForClient(id), modelID) {
+		t.Fatal("restricted Meta model visible before listing")
+	}
+	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth), fetching: true}
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{id: entry}
+	// Mimic MetaExecutor.Refresh minting a key during the list request: it
+	// writes the key and the account email into the auth it was given.
+	service.fetchRestrictedModels(context.Background(), auth.Clone(), restrictedModelListerFunc(func(_ context.Context, listAuth *coreauth.Auth) ([]string, error) {
+		listAuth.Attributes["api_key"] = "fake-minted-key"
+		listAuth.Metadata["api_key"] = "fake-minted-key"
+		listAuth.Metadata["email"] = "meta@example.com"
+		return []string{modelID}, nil
+	}), entry)
+	if !containsModelID(reg.GetModelsForClient(id), modelID) {
+		t.Fatal("listing discarded after the lister refreshed its auth")
+	}
+}
+
 func TestRestrictedPluginModelsCannotBypassCatalogAccess(t *testing.T) {
 	for _, provider := range []string{"claude", "codex"} {
 		for _, mode := range []string{"static", "auth-bound"} {

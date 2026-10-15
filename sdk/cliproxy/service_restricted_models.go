@@ -43,7 +43,7 @@ func (c *restrictedModelAccessCache) clock() time.Time {
 
 func restrictedModelIdentity(auth *coreauth.Auth) string {
 	if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "meta") {
-		if auth.AuthKind() != coreauth.AuthKindOAuth || coreauth.IsConfigAPIKeyAuth(auth) {
+		if auth.AuthKind() != coreauth.AuthKindOAuth {
 			return ""
 		}
 		if email, _ := auth.Metadata["email"].(string); strings.TrimSpace(email) != "" {
@@ -312,7 +312,9 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 			close(done)
 		}
 	}()
-	ids, errFetch := lister.ListUpstreamModels(ctx, auth)
+	// Listers may refresh credentials in place (Meta mints its API key and learns
+	// the account email), which would change the identity checked below.
+	ids, errFetch := lister.ListUpstreamModels(ctx, auth.Clone())
 	listed := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		if id = strings.TrimSpace(id); id != "" {
