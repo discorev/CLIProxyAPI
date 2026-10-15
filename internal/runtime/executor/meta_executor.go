@@ -63,6 +63,10 @@ func (e *MetaExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth
 	return nil
 }
 
+func (e *MetaExecutor) ListUpstreamModels(ctx context.Context, auth *cliproxyauth.Auth) ([]string, error) {
+	return helps.FetchMetaModelList(ctx, auth, e.HttpRequest)
+}
+
 // HttpRequest injects Meta credentials into the request and executes it.
 func (e *MetaExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
 	if req == nil {

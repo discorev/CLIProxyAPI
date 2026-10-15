@@ -42,6 +42,27 @@ func (c *restrictedModelAccessCache) clock() time.Time {
 }
 
 func restrictedModelIdentity(auth *coreauth.Auth) string {
+	if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "meta") {
+		if auth.AuthKind() != coreauth.AuthKindOAuth {
+			return ""
+		}
+		if email, _ := auth.Metadata["email"].(string); strings.TrimSpace(email) != "" {
+			return "meta:" + strings.ToLower(strings.TrimSpace(email))
+		}
+		// Minted API keys rotate; the DCA token identifies the OAuth account.
+		token, _ := auth.Metadata["dca_token"].(string)
+		token = strings.TrimSpace(token)
+		if token == "" {
+			accessToken, _ := auth.Metadata["access_token"].(string)
+			if accessToken = strings.TrimSpace(accessToken); strings.HasPrefix(accessToken, "dca:") {
+				token = accessToken
+			}
+		}
+		if token == "" {
+			return ""
+		}
+		return fmt.Sprintf("meta:%x", sha256.Sum256([]byte(token)))
+	}
 	if auth == nil || auth.AuthKind() != coreauth.AuthKindOAuth || !coreauth.UsageFetchable(auth) {
 		return ""
 	}
@@ -98,7 +119,7 @@ func (s *Service) filterRestrictedModelsLocked(auth *coreauth.Auth, models []*Mo
 	}
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
 	var restricted map[string]struct{}
-	if provider == "claude" || provider == "codex" {
+	if restrictedCatalogProvider(provider) {
 		restrictedIDs := s.restrictedAccess.restrictedIDs
 		if restrictedIDs == nil {
 			restrictedIDs = restrictedCatalogIDs
@@ -118,7 +139,7 @@ func (s *Service) filterRestrictedModelsLocked(auth *coreauth.Auth, models []*Mo
 			continue
 		}
 		id := restrictedModelID(model, restricted)
-		if provider != "claude" && provider != "codex" && model.RestrictedAccess && !model.UserDefined {
+		if !restrictedCatalogProvider(provider) && model.RestrictedAccess && !model.UserDefined {
 			id = model.ID
 		}
 		if id == "" {
@@ -154,6 +175,12 @@ func (s *Service) explicitRestrictedModelIDs(auth *coreauth.Auth) map[string]str
 		}
 	case "codex":
 		if entry := s.resolveConfigCodexKey(auth); entry != nil {
+			for _, model := range entry.Models {
+				names = append(names, model.Name)
+			}
+		}
+	case "meta":
+		if entry := s.resolveConfigMetaKey(auth); entry != nil {
 			for _, model := range entry.Models {
 				names = append(names, model.Name)
 			}
@@ -224,11 +251,22 @@ func (s *Service) queueRestrictedModelFetch(ctx context.Context, auth *coreauth.
 	go s.fetchRestrictedModels(fetchCtx, auth.Clone(), lister, entry)
 }
 
+func restrictedCatalogProvider(provider string) bool {
+	switch provider {
+	case "claude", "codex", "meta":
+		return true
+	default:
+		return false
+	}
+}
+
 func restrictedCatalogIDs(provider string) map[string]struct{} {
 	var models []*registry.ModelInfo
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "claude":
 		models = registry.GetClaudeModels()
+	case "meta":
+		models = registry.GetMetaModels()
 	case "codex":
 		models = append(models, registry.GetCodexFreeModels()...)
 		models = append(models, registry.GetCodexTeamModels()...)
@@ -274,7 +312,9 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 			close(done)
 		}
 	}()
-	ids, errFetch := lister.ListUpstreamModels(ctx, auth)
+	// Listers may refresh credentials in place (Meta mints its API key and learns
+	// the account email), which would change the identity checked below.
+	ids, errFetch := lister.ListUpstreamModels(ctx, auth.Clone())
 	listed := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		if id = strings.TrimSpace(id); id != "" {

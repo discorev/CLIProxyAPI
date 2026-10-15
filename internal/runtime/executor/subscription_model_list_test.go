@@ -15,12 +15,16 @@ import (
 )
 
 func TestOAuthModelListRequests(t *testing.T) {
-	for _, provider := range []string{"claude", "codex"} {
+	for _, provider := range []string{"claude", "codex", "meta"} {
 		t.Run(provider, func(t *testing.T) {
 			calls := 0
+			token := "fake-token"
+			if provider == "meta" {
+				token = "fake-api-key"
+			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				calls++
-				if req.Method != http.MethodGet || req.Header.Get("Authorization") != "Bearer fake-token" {
+				if req.Method != http.MethodGet || req.Header.Get("Authorization") != "Bearer "+token {
 					t.Errorf("wrong method or OAuth token: %s %v", req.Method, req.Header)
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -39,6 +43,11 @@ func TestOAuthModelListRequests(t *testing.T) {
 						}
 						_, _ = fmt.Fprint(w, `{"data":[{"id":"claude-mythos-5-1"}],"has_more":false}`)
 					}
+				} else if provider == "meta" {
+					if req.URL.Path != "/muse-code/models" || req.Header.Get("Accept") != "application/json" {
+						t.Errorf("wrong Meta model request: %s %v", req.URL, req.Header)
+					}
+					_, _ = fmt.Fprint(w, `{"object":"list","data":[{"id":" muse-spark-1.3 "},{"id":"muse-wonder-full-1.0","metadata":{"muse-code":{"is_hidden":true}}},{"id":" "},{}]}`)
 				} else {
 					if req.URL.Path != "/backend-api/codex/models" || req.URL.Query().Get("client_version") != "99.0.0" || req.Header.Get("Chatgpt-Account-Id") != "account-1" || req.Header.Get("Originator") != "codex_cli_rs" || !strings.Contains(req.Header.Get("User-Agent"), "99.0.0") {
 						t.Errorf("wrong Codex model request: %s %v", req.URL, req.Header)
@@ -48,7 +57,7 @@ func TestOAuthModelListRequests(t *testing.T) {
 			}))
 			defer server.Close()
 			ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", usageRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-				if provider == "claude" && req.URL.Host != "api.anthropic.com" || provider == "codex" && req.URL.Host != "chatgpt.com" {
+				if provider == "claude" && req.URL.Host != "api.anthropic.com" || provider == "codex" && req.URL.Host != "chatgpt.com" || provider == "meta" && req.URL.Host != "api.meta.ai" {
 					t.Errorf("unexpected upstream host: %s", req.URL)
 				}
 				redirected := req.Clone(req.Context())
@@ -64,6 +73,11 @@ func TestOAuthModelListRequests(t *testing.T) {
 			if provider == "codex" {
 				lister = NewCodexAutoExecutor(nil)
 				want = []string{"gpt-5.5", "gpt-daybreak-blue-latest"}
+				wantCalls = 1
+			} else if provider == "meta" {
+				auth.Attributes = map[string]string{"auth_kind": "oauth", "api_key": token}
+				lister = NewMetaExecutor(nil)
+				want = []string{"muse-spark-1.3", "muse-wonder-full-1.0"}
 				wantCalls = 1
 			}
 			models, err := lister.ListUpstreamModels(ctx, auth)
@@ -81,7 +95,7 @@ func TestCodexModelListRequiresAccountID(t *testing.T) {
 }
 
 func TestOAuthModelListRejectsInvalidOrFailedResponse(t *testing.T) {
-	for _, provider := range []string{"claude", "codex"} {
+	for _, provider := range []string{"claude", "codex", "meta"} {
 		for _, response := range []struct {
 			status int
 			body   string
@@ -98,8 +112,22 @@ func TestOAuthModelListRejectsInvalidOrFailedResponse(t *testing.T) {
 				if provider == "codex" {
 					lister = NewCodexExecutor(nil)
 				}
-				if ids, err := lister.ListUpstreamModels(ctx, &cliproxyauth.Auth{Metadata: map[string]any{"access_token": "fake-token", "account_id": "account-1"}}); err == nil || len(ids) != 0 {
+				auth := &cliproxyauth.Auth{Metadata: map[string]any{"access_token": "fake-token", "account_id": "account-1"}}
+				if provider == "meta" {
+					lister = NewMetaExecutor(nil)
+					auth.Attributes = map[string]string{"auth_kind": "oauth", "api_key": "fake-api-key"}
+				}
+				ids, err := lister.ListUpstreamModels(ctx, auth)
+				if err == nil || len(ids) != 0 {
 					t.Fatalf("invalid upstream list accepted: ids=%v err=%v", ids, err)
+				}
+				if provider == "meta" {
+					if !strings.HasPrefix(err.Error(), "meta model list: ") {
+						t.Fatalf("missing Meta error context: %v", err)
+					}
+					if response.status == http.StatusOK && err.Error() != "meta model list: invalid data" {
+						t.Fatalf("invalid Meta data error = %v", err)
+					}
 				}
 			})
 		}
