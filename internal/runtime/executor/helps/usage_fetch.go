@@ -24,7 +24,7 @@ type UsageHTTPRequest func(context.Context, *cliproxyauth.Auth, *http.Request) (
 func FetchClaudeUsage(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest) (cliproxyauth.UsageFetchResult, error) {
 	headers := claudeUsageHeaders()
 	result := cliproxyauth.UsageFetchResult{Raw: make(map[string]json.RawMessage)}
-	body, err := fetchUsageJSON(ctx, auth, request, http.MethodGet, "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1", headers, nil)
+	body, err := fetchUsageJSON(ctx, auth, request, "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1", headers)
 	if err != nil {
 		return result, fmt.Errorf("claude usage: %w", err)
 	}
@@ -35,7 +35,7 @@ func FetchClaudeUsage(ctx context.Context, auth *cliproxyauth.Auth, request Usag
 		return result, err
 	}
 	if !cliproxyauth.UsageFetchOptionsFromContext(ctx).SkipProfile {
-		profile, errProfile := fetchUsageJSON(ctx, auth, request, http.MethodGet, "https://api.anthropic.com/api/oauth/profile", headers, nil)
+		profile, errProfile := fetchUsageJSON(ctx, auth, request, "https://api.anthropic.com/api/oauth/profile", headers)
 		if errProfile != nil {
 			setUsageAncillaryError(&result, fmt.Errorf("claude profile: %w", errProfile))
 		} else {
@@ -50,7 +50,7 @@ func FetchCodexUsage(ctx context.Context, auth *cliproxyauth.Auth, request Usage
 	accountID = strings.TrimSpace(accountID)
 	headers := codexUsageHeaders(accountID)
 	result := cliproxyauth.UsageFetchResult{Raw: make(map[string]json.RawMessage)}
-	body, err := fetchUsageJSON(ctx, auth, request, http.MethodGet, "https://chatgpt.com/backend-api/wham/usage", headers, nil)
+	body, err := fetchUsageJSON(ctx, auth, request, "https://chatgpt.com/backend-api/wham/usage", headers)
 	if err != nil {
 		return result, fmt.Errorf("codex usage: %w", err)
 	}
@@ -61,7 +61,7 @@ func FetchCodexUsage(ctx context.Context, auth *cliproxyauth.Auth, request Usage
 		return result, err
 	}
 	if !options.SkipSubscription {
-		subscription, errSubscription := fetchUsageJSON(ctx, auth, request, http.MethodGet, "https://chatgpt.com/backend-api/subscriptions?"+url.Values{"account_id": {accountID}}.Encode(), headers, nil)
+		subscription, errSubscription := fetchUsageJSON(ctx, auth, request, "https://chatgpt.com/backend-api/subscriptions?"+url.Values{"account_id": {accountID}}.Encode(), headers)
 		if errSubscription != nil {
 			setUsageAncillaryError(&result, fmt.Errorf("codex subscription: %w", errSubscription))
 			if result.RateLimit != nil {
@@ -74,7 +74,7 @@ func FetchCodexUsage(ctx context.Context, auth *cliproxyauth.Auth, request Usage
 	headers.Set("Accept", "application/json")
 	headers.Set("OpenAI-Beta", "codex-1")
 	headers.Set("Originator", "Codex Desktop")
-	credits, errCredits := fetchUsageJSON(ctx, auth, request, http.MethodGet, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", headers, nil)
+	credits, errCredits := fetchUsageJSON(ctx, auth, request, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", headers)
 	if errCredits != nil {
 		setUsageAncillaryError(&result, fmt.Errorf("codex reset credits: %w", errCredits))
 	} else {
@@ -84,7 +84,11 @@ func FetchCodexUsage(ctx context.Context, auth *cliproxyauth.Auth, request Usage
 	return result, nil
 }
 
-func fetchUsageJSON(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest, method, endpoint string, headers http.Header, body io.Reader) (json.RawMessage, error) {
+func fetchUsageJSON(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest, endpoint string, headers http.Header) (json.RawMessage, error) {
+	return doUsageJSON(ctx, auth, request, http.MethodGet, endpoint, headers, nil)
+}
+
+func doUsageJSON(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest, method, endpoint string, headers http.Header, body io.Reader) (json.RawMessage, error) {
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return nil, err

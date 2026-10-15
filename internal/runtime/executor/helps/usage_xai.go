@@ -27,7 +27,7 @@ func FetchXAIUsage(ctx context.Context, auth *cliproxyauth.Auth, request UsageHT
 		"User-Agent":            {"xai-grok-workspace/" + version},
 		"Accept":                {"application/json"},
 	}
-	body, err := fetchUsageJSON(ctx, auth, request, http.MethodGet, xaiauth.CLIChatProxyBaseURL+"/billing?format=credits", headers, nil)
+	body, err := fetchUsageJSON(ctx, auth, request, xaiauth.CLIChatProxyBaseURL+"/billing?format=credits", headers)
 	if err != nil {
 		return result, fmt.Errorf("xai usage: %w", err)
 	}
@@ -36,7 +36,7 @@ func FetchXAIUsage(ctx context.Context, auth *cliproxyauth.Auth, request UsageHT
 		return result, err
 	}
 	result.Raw["usage"] = body
-	billing, errBilling := fetchUsageJSON(ctx, auth, request, http.MethodGet, xaiauth.CLIChatProxyBaseURL+"/billing", headers, nil)
+	billing, errBilling := fetchUsageJSON(ctx, auth, request, xaiauth.CLIChatProxyBaseURL+"/billing", headers)
 	if errBilling != nil {
 		setUsageAncillaryError(&result, fmt.Errorf("xai billing: %w", errBilling))
 		if result.RateLimit != nil {
@@ -49,7 +49,7 @@ func FetchXAIUsage(ctx context.Context, auth *cliproxyauth.Auth, request UsageHT
 		subscription := make(map[string]string)
 		complete := true
 		for _, path := range []string{"/user?include=subscription", "/settings"} {
-			profile, errProfile := fetchUsageJSON(ctx, auth, request, http.MethodGet, xaiauth.CLIChatProxyBaseURL+path, headers, nil)
+			profile, errProfile := fetchUsageJSON(ctx, auth, request, xaiauth.CLIChatProxyBaseURL+path, headers)
 			if errProfile == nil {
 				errProfile = mergeXAISubscription(subscription, profile)
 			}

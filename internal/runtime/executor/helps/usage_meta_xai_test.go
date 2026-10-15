@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +36,45 @@ func TestParseMetaSubscriptionUsage(t *testing.T) {
 			}
 			if len(windows) > 0 && windows[0].UsedPercent != tt.percent {
 				t.Fatalf("percent=%v", windows[0].UsedPercent)
+			}
+		})
+	}
+}
+
+func TestParseMetaUsageSanitizesScalarTypes(t *testing.T) {
+	for _, tt := range []struct {
+		name, body, want string
+	}{
+		{
+			name: "valid scalars and numeric strings",
+			body: `{"subs_tier_name":"Power","subs_tier_id":"power","is_subs_active":false,"subs_usage":{"tier":"power","window":{"used_percent":"25","resets_at":"1800000000","window_duration_mins":"300"}}}`,
+			want: `{"subs_tier_name":"Power","subs_tier_id":"power","is_subs_active":false,"subs_usage":{"tier":"power","window":{"used_percent":25,"resets_at":1800000000,"window_duration_mins":300}}}`,
+		},
+		{
+			name: "private data nested inside allowed fields",
+			body: `{"subs_tier_name":{"user_email":"private"},"subs_tier_id":[{"api_key":"private"}],"is_subs_active":{"user_full_name":"private"},"subs_usage":{"tier":{"user_email":"private","api_key":"private"},"window":{"used_percent":{"api_key":"private"},"resets_at":[{"user_email":"private"}],"window_duration_mins":{"user_full_name":"private"}},"weekly":{"used_percent":20,"resets_at":{"api_key":"private"},"window_duration_mins":["private"]}}}`,
+			want: `{"subs_usage":{"window":{},"weekly":{"used_percent":20}}}`,
+		},
+		{
+			name: "wrong scalar types and null omitted",
+			body: `{"subs_tier_name":false,"subs_tier_id":null,"is_subs_active":"private","subs_usage":{"tier":42,"window":{"used_percent":true,"resets_at":"private","window_duration_mins":null}}}`,
+			want: `{"subs_usage":{"window":{}}}`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, _, err := parseMetaUsage([]byte(tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got, want map[string]any
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(tt.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("sanitized usage = %s, want %s", raw, tt.want)
 			}
 		})
 	}

@@ -36,7 +36,7 @@ func FetchMetaUsage(ctx context.Context, auth *cliproxyauth.Auth, request UsageH
 		"Accept":        {"application/json"},
 	}
 	endpoint := strings.TrimSuffix(metaauth.DefaultAPIBaseURL, "/v1") + "/muse-code/key"
-	body, err := fetchUsageJSON(ctx, auth, request, http.MethodPost, endpoint, headers, strings.NewReader(`{"onboard":false}`))
+	body, err := doUsageJSON(ctx, auth, request, http.MethodPost, endpoint, headers, strings.NewReader(`{"onboard":false}`))
 	if err != nil {
 		return result, fmt.Errorf("meta usage: %w", err)
 	}
@@ -67,7 +67,10 @@ func parseMetaUsage(body []byte) (json.RawMessage, []cliproxyauth.UsageWindow, e
 	if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
 		return nil, nil, invalid
 	}
-	sanitized := usageFields(payload, "subs_tier_name", "subs_tier_id", "is_subs_active")
+	sanitized := usageScalarFields[string](payload, "subs_tier_name", "subs_tier_id")
+	for key, value := range usageScalarFields[bool](payload, "is_subs_active") {
+		sanitized[key] = value
+	}
 	windows := make([]cliproxyauth.UsageWindow, 0, 2)
 	if raw, exists := payload["subs_usage"]; exists {
 		var usage map[string]json.RawMessage
@@ -76,7 +79,7 @@ func parseMetaUsage(body []byte) (json.RawMessage, []cliproxyauth.UsageWindow, e
 		}
 		sanitized["subs_usage"] = json.RawMessage(`null`)
 		if usage != nil {
-			cleanUsage := usageFields(usage, "tier")
+			cleanUsage := usageScalarFields[string](usage, "tier")
 			for _, name := range []string{"window", "weekly"} {
 				rawWindow, exists := usage[name]
 				if !exists {
@@ -90,7 +93,13 @@ func parseMetaUsage(body []byte) (json.RawMessage, []cliproxyauth.UsageWindow, e
 				if window == nil {
 					continue
 				}
-				cleanUsage[name], _ = json.Marshal(usageFields(window, "used_percent", "resets_at", "window_duration_mins"))
+				cleanWindow := make(map[string]float64)
+				for _, key := range []string{"used_percent", "resets_at", "window_duration_mins"} {
+					if value, valid := usageNumber(window[key]); valid {
+						cleanWindow[key] = value
+					}
+				}
+				cleanUsage[name], _ = json.Marshal(cleanWindow)
 				percent, ok := usageNumber(window["used_percent"])
 				if !ok {
 					continue
@@ -115,11 +124,14 @@ func parseMetaUsage(body []byte) (json.RawMessage, []cliproxyauth.UsageWindow, e
 	return raw, windows, nil
 }
 
-func usageFields(source map[string]json.RawMessage, keys ...string) map[string]json.RawMessage {
+// usageScalarFields omits null and unexpected types so nested private fields
+// cannot pass through the allowlist into the management response.
+func usageScalarFields[T string | bool](source map[string]json.RawMessage, keys ...string) map[string]json.RawMessage {
 	fields := make(map[string]json.RawMessage, len(keys))
 	for _, key := range keys {
-		if value, exists := source[key]; exists {
-			fields[key] = value
+		var value *T
+		if err := json.Unmarshal(source[key], &value); err == nil && value != nil {
+			fields[key], _ = json.Marshal(*value)
 		}
 	}
 	return fields

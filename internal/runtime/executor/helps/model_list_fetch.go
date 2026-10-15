@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strings"
 
@@ -25,7 +24,7 @@ func FetchClaudeModelList(ctx context.Context, auth *cliproxyauth.Auth, request 
 		if after != "" {
 			endpoint += "&after_id=" + url.QueryEscape(after)
 		}
-		body, errFetch := fetchUsageJSON(ctx, auth, request, http.MethodGet, endpoint, headers, nil)
+		body, errFetch := fetchUsageJSON(ctx, auth, request, endpoint, headers)
 		if errFetch != nil {
 			return nil, fmt.Errorf("claude model list: %w", errFetch)
 		}
@@ -65,7 +64,7 @@ func FetchCodexModelList(ctx context.Context, auth *cliproxyauth.Auth, request U
 	headers.Set("Originator", "codex_cli_rs")
 	headers.Set("User-Agent", "codex_cli_rs/"+codexModelListClientVersion)
 	endpoint := "https://chatgpt.com/backend-api/codex/models?client_version=" + codexModelListClientVersion
-	body, errFetch := fetchUsageJSON(ctx, auth, request, http.MethodGet, endpoint, headers, nil)
+	body, errFetch := fetchUsageJSON(ctx, auth, request, endpoint, headers)
 	if errFetch != nil {
 		return nil, fmt.Errorf("codex model list: %w", errFetch)
 	}
