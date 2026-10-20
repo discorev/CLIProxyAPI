@@ -293,16 +293,15 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	}
 	s.restrictedAccess.mu.RLock()
 	defer s.restrictedAccess.mu.RUnlock()
-	if discoveryCatalog != nil {
-		models = append(models, applyExcludedModels(s.discoveredModelsLocked(a, discoveryCatalog), excluded)...)
-	}
+	// Eligibility is checked per credential: an empty catalog section still discovers.
+	models = append(models, applyExcludedModels(s.discoveredModelsLocked(a, discoveryCatalog), excluded)...)
 	models = s.filterRestrictedModelsLocked(a, models)
 	models = applyOAuthModelAliasForAuth(s.cfg, provider, authKind, a.Attributes, models)
 	if ctx.Err() != nil {
 		return
 	}
 	models = appendUniqueModels(models, s.filterRestrictedModelsLocked(a, pluginModels))
-	models = applyModelDefinitionsForAuth(s.cfg, a, provider, excluded, models)
+	models = applyModelDefinitionsForAuth(s.cfg, a, provider, excluded, s.restrictedCatalogIDsLocked(a.Provider), models)
 	if len(models) > 0 {
 		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		if strings.EqualFold(strings.TrimSpace(a.Provider), "antigravity") {

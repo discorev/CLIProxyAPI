@@ -123,14 +123,7 @@ func (s *Service) filterRestrictedModelsLocked(auth *coreauth.Auth, models []*Mo
 		return models
 	}
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
-	var restricted map[string]struct{}
-	if restrictedCatalogProvider(provider) {
-		restrictedIDs := s.restrictedAccess.restrictedIDs
-		if restrictedIDs == nil {
-			restrictedIDs = restrictedCatalogIDs
-		}
-		restricted = restrictedIDs(provider)
-	}
+	restricted := s.restrictedCatalogIDsLocked(provider)
 	explicit := s.explicitRestrictedModelIDs(auth)
 	var listed map[string]struct{}
 	if identity := restrictedModelIdentity(auth); identity != "" {
@@ -166,9 +159,23 @@ func (s *Service) filterRestrictedModelsLocked(auth *coreauth.Auth, models []*Mo
 	return filtered
 }
 
+// restrictedCatalogIDsLocked returns the provider's restricted catalog IDs.
+// Callers hold restrictedAccess.mu.
+func (s *Service) restrictedCatalogIDsLocked(provider string) map[string]struct{} {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if !restrictedCatalogProvider(provider) {
+		return nil
+	}
+	restrictedIDs := s.restrictedAccess.restrictedIDs
+	if restrictedIDs == nil {
+		restrictedIDs = restrictedCatalogIDs
+	}
+	return restrictedIDs(provider)
+}
+
 func (s *Service) explicitRestrictedModelIDs(auth *coreauth.Auth) map[string]struct{} {
 	if auth.AuthKind() != coreauth.AuthKindAPIKey {
-		return definedModelIDs(s.cfg, auth)
+		return definedModelIDs(auth)
 	}
 	var names []string
 	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
@@ -287,14 +294,25 @@ func restrictedCatalogIDs(provider string) map[string]struct{} {
 	return ids
 }
 
-// Read actual registration rather than a cached registration epoch.
+// Read actual registration rather than a cached registration epoch. Routes of
+// auth-file upstream_id entries are registered without a grant, so they do not
+// count as registering their upstream model.
 func registeredRestrictedIDs(auth *coreauth.Auth, restricted map[string]struct{}) map[string]struct{} {
 	registered := make(map[string]struct{})
+	routes := definedRouteIDs(auth)
+	prefix := strings.TrimSpace(auth.Prefix)
 	for _, model := range GlobalModelRegistry().GetModelsForClient(auth.ID) {
+		local := model.ID
+		if prefix != "" {
+			local = strings.TrimPrefix(local, prefix+"/")
+		}
+		if _, ok := routes[strings.ToLower(local)]; ok {
+			continue
+		}
 		if id := restrictedModelID(model, restricted); id != "" {
 			registered[id] = struct{}{}
 		}
-		if prefix := strings.TrimSpace(auth.Prefix); prefix != "" {
+		if prefix != "" {
 			if id, ok := strings.CutPrefix(model.ID, prefix+"/"); ok {
 				if _, restrictedID := restricted[id]; restrictedID {
 					registered[id] = struct{}{}

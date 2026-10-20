@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +110,26 @@ func TestDiscoverClaudeModelEffortAndThinkingCapabilities(t *testing.T) {
 	}
 	if models[1].Thinking != nil {
 		t.Fatalf("unsupported thinking kept: %+v", models[1].Thinking)
+	}
+}
+
+func TestDiscoverClaudeModelThinkingWithoutPredecessorThinking(t *testing.T) {
+	catalog := []*ModelInfo{{ID: "claude-w-0", ContextLength: 3}}
+	upstream := []coreauth.UpstreamModel{
+		{ID: "claude-w-0", Raw: json.RawMessage(`{"id":"claude-w-0","line":"w","created_at":"2026-01-01T00:00:00Z"}`)},
+		{ID: "claude-w-1", Raw: json.RawMessage(`{"id":"claude-w-1","line":"w","capabilities":{"effort":{"low":{"supported":true},"high":{"supported":true}},` +
+			`"thinking":{"supported":true,"types":{"disabled":{"supported":false}}}}}`)},
+	}
+	models := discoverForTest("claude", catalog, upstream)
+	if len(models) != 1 || models[0].ContextLength != 3 {
+		t.Fatalf("claude-w-1 not cloned from its predecessor: %+v", models)
+	}
+	want := &registry.ThinkingSupport{Min: discoveredClaudeThinkingMin, Max: discoveredClaudeThinkingMax, Levels: []string{"low", "high"}}
+	if !reflect.DeepEqual(models[0].Thinking, want) {
+		t.Fatalf("thinking = %+v, want %+v", models[0].Thinking, want)
+	}
+	if catalog[0].Thinking != nil {
+		t.Fatalf("synthesis mutated the catalog: %+v", catalog[0].Thinking)
 	}
 }
 
@@ -295,5 +316,116 @@ func TestUpstreamModelCopyRoundTrip(t *testing.T) {
 	corrupt.persistUpstreamModels(identity, upstream)
 	if persisted, errLoad := loadPersistedUpstreamModels(path); errLoad != nil || !upstreamModelsEqual(persisted[upstreamModelsKey(identity)], upstream) {
 		t.Fatalf("corrupt copy not replaced: %v %v", persisted, errLoad)
+	}
+}
+
+// swapTestCatalog publishes the embedded catalog with an edited Claude section
+// through a local catalog source, waits for the Claude refresh notification
+// (running onRefresh in it), and restores the embedded catalog on cleanup.
+func swapTestCatalog(t *testing.T, edit func(claude []json.RawMessage) []json.RawMessage, onRefresh func()) {
+	t.Helper()
+	data, errRead := os.ReadFile(filepath.Join("..", "..", "internal", "registry", "models", "models.json"))
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	var sections map[string]json.RawMessage
+	var claude []json.RawMessage
+	if errDecode := json.Unmarshal(data, &sections); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	if errDecode := json.Unmarshal(sections["claude"], &claude); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	edited, errEncode := json.Marshal(edit(claude))
+	if errEncode != nil {
+		t.Fatal(errEncode)
+	}
+	sections["claude"] = edited
+	if data, errEncode = json.Marshal(sections); errEncode != nil {
+		t.Fatal(errEncode)
+	}
+	path := filepath.Join(t.TempDir(), "models.json")
+	if errWrite := os.WriteFile(path, data, 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	refreshed := make(chan struct{}, 4)
+	registry.SetModelRefreshCallback(func(providers []string) {
+		if slices.Contains(providers, "claude") {
+			if onRefresh != nil {
+				onRefresh()
+			}
+			refreshed <- struct{}{}
+		}
+	})
+	await := func() {
+		t.Helper()
+		deadline := time.NewTimer(5 * time.Second)
+		defer deadline.Stop()
+		select {
+		case <-refreshed:
+		case <-deadline.C:
+			t.Fatal("Claude catalog refresh not published")
+		}
+	}
+	registry.SetLocalModelCatalogs(true) // Unset sources use the embedded catalogs, never the network.
+	ctx, cancel := context.WithCancel(context.Background())
+	registry.StartModelCatalogUpdaters(ctx, registry.CatalogSources{Catalog: path}, false)
+	await()
+	t.Cleanup(func() {
+		cancel()
+		restoreCtx, restoreCancel := context.WithCancel(context.Background())
+		defer restoreCancel()
+		registry.StartModelCatalogUpdaters(restoreCtx, registry.CatalogSources{}, false)
+		await()
+		registry.SetModelRefreshCallback(nil)
+		registry.SetLocalModelCatalogs(false)
+	})
+}
+
+func TestEmptyClaudeCatalogStillDiscovers(t *testing.T) {
+	auth := restrictedTestAuth("claude", "claude-discovery-empty-catalog-test")
+	service := discoveryTestService(t, auth)
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{auth.ID: {
+		identity: restrictedModelIdentity(auth),
+		upstream: []coreauth.UpstreamModel{claudeUpstreamObject("claude-discovery-test-9", "Discovery Test 9")},
+	}}
+	swapTestCatalog(t, func([]json.RawMessage) []json.RawMessage { return []json.RawMessage{} }, nil)
+	if len(registry.GetClaudeModels()) != 0 {
+		t.Fatal("Claude catalog section not emptied")
+	}
+	service.registerModelsForAuth(context.Background(), auth)
+	discovered := findModel(GlobalModelRegistry().GetModelsForClient(auth.ID), "claude-discovery-test-9")
+	if discovered == nil || discovered.ContextLength != discoveredClaudeContextLength {
+		t.Fatalf("empty catalog disabled discovery or skipped defaults: %+v", discovered)
+	}
+}
+
+func TestCatalogCatchUpReplacesDiscoveredModel(t *testing.T) {
+	auth := restrictedTestAuth("claude", "claude-discovery-catch-up-test")
+	service := discoveryTestService(t, auth)
+	const id = "claude-discovery-test-9"
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{auth.ID: {
+		identity: restrictedModelIdentity(auth),
+		upstream: []coreauth.UpstreamModel{claudeUpstreamObject(id, "Discovered")},
+	}}
+	service.registerModelsForAuth(context.Background(), auth)
+	if discovered := findModel(GlobalModelRegistry().GetModelsForClient(auth.ID), id); discovered == nil || discovered.DisplayName != "Discovered" {
+		t.Fatalf("discovered model not registered: %+v", discovered)
+	}
+
+	curated := json.RawMessage(`{"id":"` + id + `","object":"model","owned_by":"anthropic","type":"claude","display_name":"Curated","context_length":4242}`)
+	swapTestCatalog(t, func(claude []json.RawMessage) []json.RawMessage { return append(claude, curated) }, func() {
+		service.refreshModelRegistrationForAuth(auth)
+	})
+	count := 0
+	var got *ModelInfo
+	for _, model := range GlobalModelRegistry().GetModelsForClient(auth.ID) {
+		if model.ID == id {
+			count++
+			got = model
+		}
+	}
+	if count != 1 || got.DisplayName != "Curated" || got.ContextLength != 4242 {
+		t.Fatalf("curated entry did not replace the discovered one (count %d): %+v", count, got)
 	}
 }

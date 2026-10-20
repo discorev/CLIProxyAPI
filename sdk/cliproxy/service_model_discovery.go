@@ -255,6 +255,11 @@ func synthesizeClaudeModel(model coreauth.UpstreamModel, catalog []*ModelInfo, u
 	info.DisplayName = object.DisplayName
 	info.Created = object.created()
 	info.RestrictedAccess = false
+	if thinking := object.Capabilities.Thinking; thinking != nil && thinking.Supported && info.Thinking == nil {
+		// Upstream supports thinking even though the predecessor does not.
+		info.Thinking = &registry.ThinkingSupport{Min: discoveredClaudeThinkingMin, Max: discoveredClaudeThinkingMax,
+			ZeroAllowed: thinking.Types["disabled"].Supported}
+	}
 	if levels := object.effortLevels(); len(levels) > 0 && info.Thinking != nil {
 		info.Thinking.Levels = levels
 	}

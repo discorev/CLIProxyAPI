@@ -1006,10 +1006,12 @@ oauth:
   #     levels: ["low", "medium", "high"]
   # An entry without an alias that sets display-name, context-length, max-completion-tokens or thinking
   # also defines the model on every credential of the channel that does not list it (for example a model
-  # the catalog has not caught up with). Missing fields are inherited: Claude from the newest catalog model
-  # of the same family (claude-<line>-), Codex from the newest model of the plan's catalog section, other
-  # channels get only the provider's owner and type. Excluded models are never defined, and defined models
-  # skip restricted-access filtering. Entries with only max-context-length keep overriding listed models only.
+  # the catalog has not caught up with). Missing fields are inherited: from the catalog entry when the id is a
+  # catalog model, else Claude from the newest (by created date) catalog model of the same family
+  # (claude-<line>-), Codex from the newest (by created date) model of the plan's catalog section, and other
+  # channels get only the provider's owner and type. Excluded models are never defined. Settings never make a
+  # restricted-access model available: they only override it on credentials whose upstream list grants it.
+  # Entries with only max-context-length keep overriding listed models only.
   # Per field, an auth file's "models" entry wins over settings, settings over the catalog, and the catalog
   # over models discovered from the upstream model list.
   # settings:
@@ -1027,7 +1029,9 @@ oauth:
   # models.json shape (id, display_name, context_length, max_completion_tokens, thinking, supportedInputModalities,
   # supported_parameters, native_capabilities, ...). An entry whose id the credential already lists overrides only
   # the fields it contains ("thinking": null clears thinking); an unknown id defines a new model on that credential,
-  # inheriting missing fields as above. "upstream_id" lists the model under "id" but sends "upstream_id" upstream.
+  # inheriting missing fields as above. An entry's id is registered even when it is a restricted-access model.
+  # "upstream_id" lists the model under "id" but sends "upstream_id" upstream; the upstream_id model itself is
+  # only listed when the credential has it. Excluded models stay excluded, including "id"s with an upstream_id.
   # NOTE: /v1/models shows one entry per model ID. When credentials define the same ID differently, it shows the
   # entry of whichever credential registered (or re-registered) that model most recently.
   # Example auth JSON:

@@ -591,7 +591,7 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 	defer s.restrictedAccess.mu.RUnlock()
 	models = s.filterRestrictedModelsLocked(activeAuth, models)
 	models = applyOAuthModelAliasForAuth(s.cfg, providerKey, activeAuthKind, activeAuth.Attributes, models)
-	models = applyModelDefinitionsForAuth(s.cfg, activeAuth, providerKey, activeExcluded, models)
+	models = applyModelDefinitionsForAuth(s.cfg, activeAuth, providerKey, activeExcluded, s.restrictedCatalogIDsLocked(activeAuth.Provider), models)
 	if len(models) > 0 {
 		s.registerResolvedModelsForAuth(activeAuth, providerKey, applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		return true

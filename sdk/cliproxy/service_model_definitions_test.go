@@ -90,10 +90,24 @@ func TestDefinedModelInheritance(t *testing.T) {
 		{ID: "gpt-b", Created: 2, Object: "model", OwnedBy: "openai", Type: "openai", MaxCompletionTokens: 99, ContextLength: 272000,
 			DisplayName: "GPT B", Description: "b", SupportedParameters: []string{"tools"}},
 	}
+	// A catalog ID the credential does not resolve inherits that exact entry.
+	exact := appendDefinedModel("claude", claudeCatalog, nil, nil, "claude-fable-5", "")[0]
+	if exact.ContextLength != 5 || exact.Created != 1 || exact.MetadataModelID != "" {
+		t.Fatalf("catalog ID did not inherit its own entry: %+v", exact)
+	}
+	exactRoute := appendDefinedModel("claude", claudeCatalog, nil, nil, "mine", "claude-fable-5")[0]
+	if exactRoute.ID != "mine" || exactRoute.MetadataModelID != "claude-fable-5" || exactRoute.ContextLength != 5 {
+		t.Fatalf("upstream_id did not inherit the upstream catalog entry: %+v", exactRoute)
+	}
+
 	codex := appendDefinedModel("codex", codexCatalog, nil, nil, "gpt-secret", "")[0]
 	if codex.ID != "gpt-secret" || codex.Version != "gpt-secret" || codex.MaxCompletionTokens != 99 || codex.ContextLength != 272000 ||
 		codex.DisplayName != "" || codex.Description != "" || !reflect.DeepEqual(codex.SupportedParameters, []string{"tools"}) {
 		t.Fatalf("Codex model did not inherit the template: %+v", codex)
+	}
+
+	if codexExact := appendDefinedModel("codex", codexCatalog, nil, nil, "gpt-a", "")[0]; codexExact.MaxCompletionTokens != 1 {
+		t.Fatalf("Codex catalog ID did not inherit its own entry: %+v", codexExact)
 	}
 
 	resolved := []*ModelInfo{{ID: "kimi-k2", OwnedBy: "moonshot", Type: "kimi"}}
@@ -237,5 +251,128 @@ func TestAuthFileUpstreamIDAndCodexClientContextWindow(t *testing.T) {
 	entries, _ := resp["models"].([]map[string]any)
 	if len(entries) != 1 || entries[0]["context_window"] != 123456 {
 		t.Fatalf("Codex client not told the overridden context window: %#v", entries)
+	}
+}
+
+func TestRestrictedModelsOptInOnlyThroughAuthFileIDs(t *testing.T) {
+	auth := restrictedTestAuth("claude", "claude-definition-optin-test")
+	service := discoveryTestService(t, auth)
+	restricted := findModel(registry.GetClaudeModels(), "claude-opus-4-6")
+	if restricted == nil {
+		t.Skip("claude-opus-4-6 not in the Claude catalog")
+	}
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} { return map[string]struct{}{restricted.ID: {}} }
+	service.cfg.OAuthSettings = map[string][]config.OAuthModelSetting{"claude": {{Name: restricted.ID, DisplayName: "Settings R"}}}
+	defineModels(auth, `[{"id":"mine","upstream_id":"`+restricted.ID+`"}]`)
+
+	service.registerModelsForAuth(context.Background(), auth)
+	registered := GlobalModelRegistry().GetModelsForClient(auth.ID)
+	if containsModelID(registered, restricted.ID) {
+		t.Fatalf("settings entry or upstream_id listed restricted %s without a grant: %v", restricted.ID, modelIDs(registered))
+	}
+	mine := findModel(registered, "mine")
+	if mine == nil || mine.MetadataModelID != restricted.ID || mine.Created != restricted.Created || mine.ContextLength != restricted.ContextLength {
+		t.Fatalf("upstream_id route missing or not inherited from %s: %+v", restricted.ID, mine)
+	}
+	if got := service.explicitRestrictedModelIDs(auth); !reflect.DeepEqual(got, map[string]struct{}{"mine": {}}) {
+		t.Fatalf("explicit opt-ins = %v, want only the auth-file id", got)
+	}
+
+	// With a grant the gate keeps the model and the settings override applies.
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{auth.ID: {
+		identity: restrictedModelIdentity(auth),
+		listed:   map[string]struct{}{restricted.ID: {}},
+	}}
+	service.registerModelsForAuth(context.Background(), auth)
+	registered = GlobalModelRegistry().GetModelsForClient(auth.ID)
+	if granted := findModel(registered, restricted.ID); granted == nil || granted.DisplayName != "Settings R" {
+		t.Fatalf("granted restricted model missing or settings not applied: %+v", granted)
+	}
+	if !containsModelID(registered, "mine") {
+		t.Fatalf("upstream_id route missing with a grant: %v", modelIDs(registered))
+	}
+}
+
+func TestUpstreamIDRouteDoesNotCountAsGrant(t *testing.T) {
+	catalogID := registry.GetClaudeModels()[0].ID
+	restrictedID := findModel(registry.GetClaudeModels(), "claude-opus-4-6")
+	if restrictedID == nil || restrictedID.ID == catalogID {
+		t.Skip("claude-opus-4-6 not in the Claude catalog")
+	}
+	auth := restrictedTestAuth("claude", "claude-definition-route-grant-test")
+	// Define before registering with the manager: refreshes re-read its copy.
+	defineModels(auth, `[{"id":"mine","upstream_id":"`+restrictedID.ID+`"}]`)
+	service := discoveryTestService(t, auth)
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} { return map[string]struct{}{restrictedID.ID: {}} }
+	reg := GlobalModelRegistry()
+	service.registerModelsForAuth(context.Background(), auth)
+	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth), fetching: true}
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{auth.ID: entry}
+	fetch := func(models ...coreauth.UpstreamModel) {
+		t.Helper()
+		service.fetchRestrictedModels(context.Background(), auth, upstreamListerFunc(func(context.Context, *coreauth.Auth) ([]coreauth.UpstreamModel, error) {
+			return models, nil
+		}), entry)
+	}
+
+	epoch := reg.ClientRegistrationEpoch(auth.ID)
+	fetch(claudeUpstreamObject(catalogID, "Catalog"))
+	if got := reg.ClientRegistrationEpoch(auth.ID); got != epoch {
+		t.Fatalf("ungranted upstream_id route treated as a denied grant: epoch %d != %d", got, epoch)
+	}
+	fetch(claudeUpstreamObject(catalogID, "Catalog"), claudeUpstreamObject(restrictedID.ID, "Restricted"))
+	if got := reg.ClientRegistrationEpoch(auth.ID); got <= epoch {
+		t.Fatalf("new grant did not re-register: epoch %d <= %d", got, epoch)
+	}
+	if registered := reg.GetModelsForClient(auth.ID); !containsModelID(registered, restrictedID.ID) || !containsModelID(registered, "mine") {
+		t.Fatalf("granted model or route missing: %v", modelIDs(registered))
+	}
+}
+
+func TestDefinitionAliasRespectsExcludedModels(t *testing.T) {
+	auth := restrictedTestAuth("claude", "claude-definition-excluded-alias-test")
+	service := discoveryTestService(t, auth)
+	upstream := registry.GetClaudeModels()[0].ID
+	auth.Attributes["excluded_models"] = "local-secret"
+	defineModels(auth, `[{"id":"local-secret","upstream_id":"`+upstream+`"}]`)
+	service.registerModelsForAuth(context.Background(), auth)
+	registered := GlobalModelRegistry().GetModelsForClient(auth.ID)
+	if containsModelID(registered, "local-secret") || !containsModelID(registered, upstream) {
+		t.Fatalf("excluded alias registered or upstream model lost: %v", modelIDs(registered))
+	}
+}
+
+func TestUpstreamIDOnExistingIDIndependentOfCatalogOrder(t *testing.T) {
+	auth := restrictedTestAuth("codex", "codex-definition-collision-test")
+	service := discoveryTestService(t, auth)
+	catalog := codexCatalogModelsForPlan("pro")
+	local, target := -1, -1
+	for i, model := range catalog {
+		switch model.ID {
+		case "gpt-5.5":
+			local = i
+		case "gpt-6-astra":
+			target = i
+		}
+	}
+	if local < 0 || target < 0 || local > target {
+		t.Skip("Codex pro catalog does not list gpt-5.5 before gpt-6-astra")
+	}
+	defineModels(auth, `[{"id":"gpt-5.5","upstream_id":"gpt-6-astra"}]`)
+	service.registerModelsForAuth(context.Background(), auth)
+	registered := GlobalModelRegistry().GetModelsForClient(auth.ID)
+	astra := catalog[target]
+	route := findModel(registered, "gpt-5.5")
+	if route == nil || route.MetadataModelID != "gpt-6-astra" || route.DisplayName != astra.DisplayName || route.ContextLength != astra.ContextLength {
+		t.Fatalf("gpt-5.5 not routed to gpt-6-astra: %+v", route)
+	}
+	count := 0
+	for _, model := range registered {
+		if model.ID == "gpt-5.5" {
+			count++
+		}
+	}
+	if count != 1 || !containsModelID(registered, "gpt-6-astra") {
+		t.Fatalf("collision registered gpt-5.5 %d times or lost gpt-6-astra: %v", count, modelIDs(registered))
 	}
 }
