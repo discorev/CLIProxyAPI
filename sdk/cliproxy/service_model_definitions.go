@@ -39,7 +39,7 @@ func applyModelDefinitionsForAuth(cfg *config.Config, auth *coreauth.Auth, provi
 	}
 	catalog := discoveryCatalogSection(auth)
 	for _, setting := range settings {
-		if _, ok := restricted[setting.Name]; !ok && setting.Alias == "" && setting.DefinesModel() {
+		if !hasModelIDFold(restricted, setting.Name) && setting.Alias == "" && setting.DefinesModel() {
 			models = appendDefinedModel(provider, catalog, excluded, models, setting.Name, "")
 		}
 	}
@@ -291,4 +291,16 @@ func overlayModelDefinition(model *ModelInfo, raw json.RawMessage) *ModelInfo {
 		info.ExplicitInputModalities = true
 	}
 	return &info
+}
+
+// hasModelIDFold reports whether ids contains id, ignoring case and
+// surrounding whitespace the way definition lookups do.
+func hasModelIDFold(ids map[string]struct{}, id string) bool {
+	id = strings.TrimSpace(id)
+	for candidate := range ids {
+		if strings.EqualFold(candidate, id) {
+			return true
+		}
+	}
+	return false
 }

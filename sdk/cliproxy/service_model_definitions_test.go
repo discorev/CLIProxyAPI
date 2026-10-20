@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
@@ -290,6 +291,24 @@ func TestRestrictedModelsOptInOnlyThroughAuthFileIDs(t *testing.T) {
 	}
 	if !containsModelID(registered, "mine") {
 		t.Fatalf("upstream_id route missing with a grant: %v", modelIDs(registered))
+	}
+}
+
+func TestSettingsCannotDefineRestrictedModelByCaseVariant(t *testing.T) {
+	auth := restrictedTestAuth("claude", "claude-definition-case-test")
+	service := discoveryTestService(t, auth)
+	restricted := findModel(registry.GetClaudeModels(), "claude-opus-4-6")
+	if restricted == nil {
+		t.Skip("claude-opus-4-6 not in the Claude catalog")
+	}
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} { return map[string]struct{}{restricted.ID: {}} }
+	service.cfg.OAuthSettings = map[string][]config.OAuthModelSetting{"claude": {{Name: " " + strings.ToUpper(restricted.ID), DisplayName: "Settings R"}}}
+
+	service.registerModelsForAuth(context.Background(), auth)
+	for _, model := range GlobalModelRegistry().GetModelsForClient(auth.ID) {
+		if strings.EqualFold(strings.TrimSpace(model.ID), restricted.ID) {
+			t.Fatalf("case-variant settings entry defined restricted %s without a grant", model.ID)
+		}
 	}
 }
 
