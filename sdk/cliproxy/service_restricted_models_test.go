@@ -25,8 +25,16 @@ import (
 
 type restrictedModelListerFunc func(context.Context, *coreauth.Auth) ([]string, error)
 
-func (f restrictedModelListerFunc) ListUpstreamModels(ctx context.Context, auth *coreauth.Auth) ([]string, error) {
-	return f(ctx, auth)
+func (f restrictedModelListerFunc) ListUpstreamModels(ctx context.Context, auth *coreauth.Auth) ([]coreauth.UpstreamModel, error) {
+	ids, err := f(ctx, auth)
+	if ids == nil {
+		return nil, err
+	}
+	models := make([]coreauth.UpstreamModel, 0, len(ids))
+	for _, id := range ids {
+		models = append(models, coreauth.UpstreamModel{ID: id})
+	}
+	return models, err
 }
 
 func restrictedTestAuth(provider, id string) *coreauth.Auth {

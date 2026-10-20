@@ -404,6 +404,8 @@ func TestLogFormatterPrintsUsageLifecycleFields(t *testing.T) {
 		{"reset auto-apply limited to listed providers: other providers are dry-run", log.Fields{"providers": "codex"},
 			`reset auto-apply limited to listed providers: other providers are dry-run providers=codex`},
 		{"usage sweep stopped", log.Fields{"reason": "stop_requested"}, `usage sweep stopped reason="stop_requested"`},
+		{"discovered models changed", log.Fields{"provider": "claude", "count": 1, "added": "claude-new-1", "removed": ""},
+			`discovered models changed provider=claude count=1 added=claude-new-1 removed=`},
 	} {
 		t.Run(tt.message+"/"+tt.want, func(t *testing.T) {
 			entry := log.NewEntry(log.New())

@@ -1,0 +1,299 @@
+package cliproxy
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+)
+
+func loadUpstreamFixture(t *testing.T, name, idKey string) []coreauth.UpstreamModel {
+	t.Helper()
+	data, errRead := os.ReadFile(filepath.Join("testdata", name))
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	var objects []json.RawMessage
+	if errDecode := json.Unmarshal(data, &objects); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	models := make([]coreauth.UpstreamModel, 0, len(objects))
+	for _, raw := range objects {
+		var fields map[string]any
+		if errDecode := json.Unmarshal(raw, &fields); errDecode != nil {
+			t.Fatal(errDecode)
+		}
+		id, _ := fields[idKey].(string)
+		models = append(models, coreauth.UpstreamModel{ID: id, Raw: raw})
+	}
+	return models
+}
+
+func findModel(models []*ModelInfo, id string) *ModelInfo {
+	for _, model := range models {
+		if model.ID == id {
+			return model
+		}
+	}
+	return nil
+}
+
+func discoverForTest(provider string, catalog []*ModelInfo, upstream []coreauth.UpstreamModel) []*ModelInfo {
+	return synthesizeDiscoveredModels(provider, catalog, upstream, discoverableUpstreamModels(provider, catalog, upstream))
+}
+
+func TestDiscoverClaudeModelsFromPredecessorAndDefaults(t *testing.T) {
+	upstream := loadUpstreamFixture(t, "upstream-claude-models.json", "id")
+	catalog := []*ModelInfo{
+		{ID: "claude-opus-8-9", ContextLength: 1, Description: "older opus"},
+		{ID: "claude-opus-9", Object: "model", OwnedBy: "anthropic", Type: "claude", ContextLength: 777, MaxCompletionTokens: 64000,
+			Description: "opus", Version: "v9", Created: 1, Thinking: &registry.ThinkingSupport{ZeroAllowed: true, DynamicAllowed: true, Levels: []string{"low", "medium"}}},
+		{ID: "claude-sonnet-9", ContextLength: 2},
+	}
+	models := discoverForTest("claude", catalog, upstream)
+	if got := modelIDs(models); !reflect.DeepEqual(got, []string{"claude-opus-9-1", "claude-quill-9"}) {
+		t.Fatalf("discovered = %v", got)
+	}
+
+	opus := findModel(models, "claude-opus-9-1")
+	wantCreated := time.Date(2031, time.March, 10, 12, 30, 0, 0, time.UTC).Unix()
+	if opus.ContextLength != 777 || opus.MaxCompletionTokens != 64000 || opus.DisplayName != "Claude Opus 9.1" ||
+		opus.Created != wantCreated || opus.Description != "" || opus.Version != "" || opus.Type != "claude" {
+		t.Fatalf("opus not cloned from newest same-line catalog model: %+v", opus)
+	}
+	wantThinking := &registry.ThinkingSupport{ZeroAllowed: true, DynamicAllowed: true, Levels: []string{"low", "medium", "high", "xhigh", "max"}}
+	if !reflect.DeepEqual(opus.Thinking, wantThinking) {
+		t.Fatalf("opus thinking = %+v, want %+v", opus.Thinking, wantThinking)
+	}
+	if !reflect.DeepEqual(catalog[1].Thinking.Levels, []string{"low", "medium"}) {
+		t.Fatalf("synthesis mutated the catalog: %+v", catalog[1].Thinking)
+	}
+
+	quill := findModel(models, "claude-quill-9")
+	want := &ModelInfo{
+		ID: "claude-quill-9", Object: "model", OwnedBy: "anthropic", Type: "claude", DisplayName: "Claude Quill 9",
+		Created:       time.Date(2031, time.February, 1, 0, 0, 0, 0, time.UTC).Unix(),
+		ContextLength: discoveredClaudeContextLength, MaxCompletionTokens: discoveredClaudeMaxCompletionTokens,
+		SupportedInputModalities: []string{"text", "image"}, SupportedOutputModalities: []string{"text"},
+		Thinking: &registry.ThinkingSupport{Min: 1024, Max: 128000, Levels: []string{"low", "medium", "high", "xhigh", "max"}},
+	}
+	if !reflect.DeepEqual(quill, want) {
+		t.Fatalf("quill defaults = %+v, want %+v", quill, want)
+	}
+}
+
+func TestDiscoverClaudeModelEffortAndThinkingCapabilities(t *testing.T) {
+	upstream := []coreauth.UpstreamModel{
+		{ID: "claude-x-1", Raw: json.RawMessage(`{"id":"claude-x-1","line":"x","capabilities":{"image_input":{"supported":false},` +
+			`"effort":{"supported":true,"max":{"supported":true},"medium":{"supported":false},"low":{"supported":true}},` +
+			`"thinking":{"supported":true,"types":{"disabled":{"supported":true}}}}}`)},
+		{ID: "claude-y-1", Raw: json.RawMessage(`{"id":"claude-y-1","line":"y","capabilities":{"thinking":{"supported":false}}}`)},
+		{ID: "claude-z-1"}, // IDs without an upstream object cannot be synthesized.
+	}
+	models := discoverForTest("claude", nil, upstream)
+	if got := modelIDs(models); !reflect.DeepEqual(got, []string{"claude-x-1", "claude-y-1"}) {
+		t.Fatalf("discovered = %v", got)
+	}
+	wantThinking := &registry.ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true, Levels: []string{"low", "max"}}
+	if !reflect.DeepEqual(models[0].Thinking, wantThinking) || !reflect.DeepEqual(models[0].SupportedInputModalities, []string{"text"}) {
+		t.Fatalf("effort levels not mapped low to max: %+v %v", models[0].Thinking, models[0].SupportedInputModalities)
+	}
+	if models[1].Thinking != nil {
+		t.Fatalf("unsupported thinking kept: %+v", models[1].Thinking)
+	}
+}
+
+func TestDiscoverCodexModelsFromNewestTemplate(t *testing.T) {
+	upstream := loadUpstreamFixture(t, "upstream-codex-models.json", "slug")
+	webSearch := true
+	catalog := []*ModelInfo{
+		{ID: "gpt-fixture-old", Created: 1, MaxCompletionTokens: 1},
+		{ID: "gpt-fixture-a", Object: "model", OwnedBy: "openai", Type: "openai", Created: 3, MaxCompletionTokens: 99, ContextLength: 1,
+			Description: "template", Version: "gpt-fixture-a", SupportedParameters: []string{"tools"}, SupportedOutputModalities: []string{"text"},
+			NativeCapabilities: &registry.NativeCapabilities{WebSearch: &webSearch}, Thinking: &registry.ThinkingSupport{Levels: []string{"low"}}},
+		{ID: "gpt-fixture-mid", Created: 2, MaxCompletionTokens: 2},
+	}
+	models := discoverForTest("codex", catalog, upstream)
+	// gpt-fixture-hidden is hidden; gpt-fixture-a is in the catalog.
+	if got := modelIDs(models); !reflect.DeepEqual(got, []string{"gpt-fixture-new", "gpt-fixture-b"}) {
+		t.Fatalf("discovered = %v", got)
+	}
+	want := &ModelInfo{
+		ID: "gpt-fixture-new", Object: "model", OwnedBy: "openai", Type: "openai", DisplayName: "GPT-Fixture-New",
+		Description: "Synthetic model for discovery tests.", Version: "gpt-fixture-new",
+		ContextLength: 400000, MaxCompletionTokens: 99, SupportedParameters: []string{"tools"},
+		SupportedInputModalities: []string{"text", "image"}, SupportedOutputModalities: []string{"text"},
+		NativeCapabilities: &registry.NativeCapabilities{WebSearch: &webSearch},
+		Thinking:           &registry.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
+	}
+	if !reflect.DeepEqual(models[0], want) {
+		t.Fatalf("codex synthesis = %+v, want %+v", models[0], want)
+	}
+	if !reflect.DeepEqual(catalog[1].Thinking.Levels, []string{"low"}) {
+		t.Fatalf("synthesis mutated the template: %+v", catalog[1].Thinking)
+	}
+}
+
+func discoveryTestService(t *testing.T, auth *coreauth.Auth) *Service {
+	t.Helper()
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{cfg: &config.Config{}, coreManager: manager, pluginHost: pluginhost.New()}
+	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} { return map[string]struct{}{} }
+	t.Cleanup(func() { GlobalModelRegistry().UnregisterClient(auth.ID) })
+	return service
+}
+
+func claudeUpstreamObject(id, displayName string) coreauth.UpstreamModel {
+	raw := `{"type":"model","id":"` + id + `","display_name":"` + displayName + `","created_at":"2026-10-01T00:00:00Z","line":"discovery-test",` +
+		`"capabilities":{"thinking":{"supported":true,"types":{"disabled":{"supported":true}}}}}`
+	return coreauth.UpstreamModel{ID: id, Raw: json.RawMessage(raw)}
+}
+
+func TestRegistrationUsesCatalogEntryOverDiscoveredOne(t *testing.T) {
+	auth := restrictedTestAuth("claude", "claude-discovery-registration-test")
+	service := discoveryTestService(t, auth)
+	catalogModel := registry.GetClaudeModels()[0]
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{auth.ID: {
+		identity: restrictedModelIdentity(auth),
+		upstream: []coreauth.UpstreamModel{
+			claudeUpstreamObject(catalogModel.ID, "Upstream Name"),
+			claudeUpstreamObject("claude-discovery-test-9", "Discovery Test 9"),
+		},
+	}}
+	service.registerModelsForAuth(context.Background(), auth)
+	registered := GlobalModelRegistry().GetModelsForClient(auth.ID)
+	discovered := findModel(registered, "claude-discovery-test-9")
+	if discovered == nil || discovered.DisplayName != "Discovery Test 9" {
+		t.Fatalf("discovered model not registered: %v", modelIDs(registered))
+	}
+	if curated := findModel(registered, catalogModel.ID); curated == nil || curated.DisplayName != catalogModel.DisplayName {
+		t.Fatalf("catalog model %q not registered from the catalog: %+v", catalogModel.ID, curated)
+	}
+	count := 0
+	for _, model := range registered {
+		if model.ID == catalogModel.ID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("catalog model registered %d times", count)
+	}
+
+	// API-key credentials never discover.
+	apiKeyAuth := auth.Clone()
+	apiKeyAuth.Attributes = map[string]string{"auth_kind": "apikey", "api_key": "fake-key"}
+	service.restrictedAccess.mu.RLock()
+	got := service.discoveredModelsLocked(apiKeyAuth, nil)
+	service.restrictedAccess.mu.RUnlock()
+	if got != nil {
+		t.Fatalf("API-key credential discovered models: %v", modelIDs(got))
+	}
+}
+
+func TestDiscoveredSetChangeTriggersReregistration(t *testing.T) {
+	auth := restrictedTestAuth("claude", "claude-discovery-refresh-test")
+	service := discoveryTestService(t, auth)
+	path := filepath.Join(t.TempDir(), "upstream.json")
+	service.restrictedAccess.persistPath = path
+	reg := GlobalModelRegistry()
+	service.registerModelsForAuth(context.Background(), auth)
+	entry := &restrictedModelAccessEntry{identity: restrictedModelIdentity(auth), fetching: true}
+	service.restrictedAccess.entries = map[string]*restrictedModelAccessEntry{auth.ID: entry}
+	catalogID := registry.GetClaudeModels()[0].ID
+	fetch := func(models ...coreauth.UpstreamModel) {
+		t.Helper()
+		service.fetchRestrictedModels(context.Background(), auth, upstreamListerFunc(func(context.Context, *coreauth.Auth) ([]coreauth.UpstreamModel, error) {
+			return models, nil
+		}), entry)
+	}
+
+	initialEpoch := reg.ClientRegistrationEpoch(auth.ID)
+	fetch(claudeUpstreamObject(catalogID, "Catalog"), claudeUpstreamObject("claude-discovery-test-9", "Discovery Test 9"))
+	if got := reg.ClientRegistrationEpoch(auth.ID); got <= initialEpoch {
+		t.Fatalf("new discovered model did not re-register: epoch %d <= %d", got, initialEpoch)
+	}
+	if !containsModelID(reg.GetModelsForClient(auth.ID), "claude-discovery-test-9") {
+		t.Fatal("discovered model missing after re-registration")
+	}
+	info, errStat := os.Stat(path)
+	if errStat != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("upstream copy not written with mode 0600: %v %v", info, errStat)
+	}
+
+	discoveredEpoch := reg.ClientRegistrationEpoch(auth.ID)
+	fetch(claudeUpstreamObject(catalogID, "Catalog"), claudeUpstreamObject("claude-discovery-test-9", "Discovery Test 9"))
+	if got := reg.ClientRegistrationEpoch(auth.ID); got != discoveredEpoch {
+		t.Fatalf("unchanged discovered set re-registered: epoch %d != %d", got, discoveredEpoch)
+	}
+
+	fetch(claudeUpstreamObject(catalogID, "Catalog"))
+	if got := reg.ClientRegistrationEpoch(auth.ID); got <= discoveredEpoch {
+		t.Fatalf("lost discovered model did not re-register: epoch %d <= %d", got, discoveredEpoch)
+	}
+	if containsModelID(reg.GetModelsForClient(auth.ID), "claude-discovery-test-9") {
+		t.Fatal("lost discovered model still registered")
+	}
+}
+
+type upstreamListerFunc func(context.Context, *coreauth.Auth) ([]coreauth.UpstreamModel, error)
+
+func (f upstreamListerFunc) ListUpstreamModels(ctx context.Context, auth *coreauth.Auth) ([]coreauth.UpstreamModel, error) {
+	return f(ctx, auth)
+}
+
+func TestUpstreamModelCopyRoundTrip(t *testing.T) {
+	auth := restrictedTestAuth("claude", "claude-discovery-seed-test")
+	identity := restrictedModelIdentity(auth)
+	upstream := []coreauth.UpstreamModel{claudeUpstreamObject("claude-discovery-seed-9", "Seed 9")}
+	path := filepath.Join(t.TempDir(), "upstream.json")
+
+	writer := &Service{}
+	writer.restrictedAccess.persistPath = path
+	writer.persistUpstreamModels(identity, upstream)
+	data, errRead := os.ReadFile(path)
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	if strings.Contains(string(data), identity) || strings.Contains(string(data), "fake-token") || strings.Contains(string(data), "account-1") {
+		t.Fatalf("upstream copy leaks credential identity: %s", data)
+	}
+
+	reader := discoveryTestService(t, auth)
+	reader.seedUpstreamModels(path)
+	reader.restrictedAccess.mu.RLock()
+	seeded := reader.upstreamModelsLocked(auth)
+	entries := len(reader.restrictedAccess.entries)
+	reader.restrictedAccess.mu.RUnlock()
+	if !upstreamModelsEqual(seeded, upstream) {
+		t.Fatalf("seeded = %+v, want %+v", seeded, upstream)
+	}
+	if entries != 0 {
+		t.Fatal("seeding created cache entries that could delay the first fetch")
+	}
+	reader.registerModelsForAuth(context.Background(), auth)
+	if !containsModelID(GlobalModelRegistry().GetModelsForClient(auth.ID), "claude-discovery-seed-9") {
+		t.Fatal("first registration ignored the seeded upstream copy")
+	}
+
+	if errWrite := os.WriteFile(path, []byte("not json"), 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	corrupt := &Service{}
+	corrupt.seedUpstreamModels(path)
+	corrupt.persistUpstreamModels(identity, upstream)
+	if persisted, errLoad := loadPersistedUpstreamModels(path); errLoad != nil || !upstreamModelsEqual(persisted[upstreamModelsKey(identity)], upstream) {
+		t.Fatalf("corrupt copy not replaced: %v %v", persisted, errLoad)
+	}
+}

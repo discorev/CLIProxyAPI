@@ -1733,3 +1733,26 @@ func assertCodexNullableFieldCleared(t *testing.T, entry map[string]any, key str
 		t.Errorf("%s = %#v, want null", key, value)
 	}
 }
+
+func TestCodexClientModelsResponseUsesDiscoveredTemplateFallback(t *testing.T) {
+	const slug = "gpt-discovered-client-template-test"
+	registry.RegisterDiscoveredCodexClientTemplates([]json.RawMessage{
+		json.RawMessage(`{"slug":"` + slug + `","display_name":"Discovered","discovery_marker":"upstream","priority":3}`),
+		json.RawMessage(`{"slug":"gpt-5.5","display_name":"Not curated","discovery_marker":"upstream"}`),
+	})
+	resp := BuildResponse([]map[string]any{{"id": slug}, {"id": "gpt-5.5"}}, nil, false)
+	models, ok := resp["models"].([]map[string]any)
+	if !ok {
+		t.Fatalf("models type = %T", resp["models"])
+	}
+	entries := make(map[string]map[string]any, len(models))
+	for _, model := range models {
+		entries[stringModelValue(model, "slug")] = model
+	}
+	if got := entries[slug]["discovery_marker"]; got != "upstream" {
+		t.Fatalf("discovered slug did not use its upstream template: %v", entries[slug])
+	}
+	if _, ok := entries["gpt-5.5"]["discovery_marker"]; ok {
+		t.Fatalf("discovered template replaced the curated one: %v", entries["gpt-5.5"])
+	}
+}

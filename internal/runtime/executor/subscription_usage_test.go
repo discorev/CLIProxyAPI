@@ -136,7 +136,7 @@ func TestCodexChatGPTBackendRequestsUseOuterToken(t *testing.T) {
 						}
 					case "models":
 						models, err := executor.ListUpstreamModels(ctx, auth)
-						if err != nil || len(models) != 1 || models[0] != "gpt-5.5" {
+						if err != nil || len(models) != 1 || models[0].ID != "gpt-5.5" {
 							t.Fatalf("models = %v, err = %v", models, err)
 						}
 					case "reset":

@@ -90,7 +90,7 @@ func (e *CodexAutoExecutor) FetchUsage(ctx context.Context, auth *cliproxyauth.A
 	return e.httpExec.FetchUsage(ctx, auth)
 }
 
-func (e *CodexAutoExecutor) ListUpstreamModels(ctx context.Context, auth *cliproxyauth.Auth) ([]string, error) {
+func (e *CodexAutoExecutor) ListUpstreamModels(ctx context.Context, auth *cliproxyauth.Auth) ([]cliproxyauth.UpstreamModel, error) {
 	if e == nil || e.httpExec == nil {
 		return nil, fmt.Errorf("codex auto executor: http executor is nil")
 	}

@@ -1,0 +1,39 @@
+[
+ {
+  "slug": "gpt-fixture-new",
+  "display_name": "GPT-Fixture-New",
+  "description": "Synthetic model for discovery tests.",
+  "visibility": "list",
+  "context_window": 400000,
+  "input_modalities": ["text", "image"],
+  "supported_reasoning_levels": [
+   {"effort": "low"},
+   {"effort": "medium"},
+   {"effort": "high"},
+   {"effort": "xhigh"}
+  ]
+ },
+ {
+  "slug": "gpt-fixture-hidden",
+  "display_name": "GPT-Fixture-Hidden",
+  "description": "Synthetic hidden model.",
+  "visibility": "hide",
+  "context_window": 100000,
+  "input_modalities": ["text"],
+  "supported_reasoning_levels": [{"effort": "low"}]
+ },
+ {
+  "slug": "gpt-fixture-a",
+  "display_name": "GPT-Fixture-A",
+  "description": "Synthetic model already in the catalog.",
+  "visibility": "list",
+  "context_window": 200000,
+  "input_modalities": ["text", "image"],
+  "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]
+ },
+ {
+  "slug": "gpt-fixture-b",
+  "display_name": "GPT-Fixture-B",
+  "visibility": "list"
+ }
+]

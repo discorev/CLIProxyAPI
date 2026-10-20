@@ -176,3 +176,49 @@ func requiredCodexClientModelInteger(model map[string]any, field string, positiv
 	}
 	return int64(value), nil
 }
+
+// discoveredCodexClientTemplates holds upstream Codex model objects for slugs
+// discovered on a credential. They back the Codex client catalog only when
+// codex_client_models.json has no template for the slug.
+var discoveredCodexClientTemplates = struct {
+	mu        sync.RWMutex
+	templates map[string]map[string]any
+}{}
+
+// RegisterDiscoveredCodexClientTemplates stores upstream Codex model objects
+// as client catalog templates, keyed by slug.
+func RegisterDiscoveredCodexClientTemplates(objects []json.RawMessage) {
+	decoded := make(map[string]map[string]any, len(objects))
+	for _, raw := range objects {
+		var model map[string]any
+		if json.Unmarshal(raw, &model) != nil {
+			continue
+		}
+		if slug, _ := model["slug"].(string); strings.TrimSpace(slug) != "" {
+			decoded[strings.TrimSpace(slug)] = model
+		}
+	}
+	if len(decoded) == 0 {
+		return
+	}
+	discoveredCodexClientTemplates.mu.Lock()
+	defer discoveredCodexClientTemplates.mu.Unlock()
+	if discoveredCodexClientTemplates.templates == nil {
+		discoveredCodexClientTemplates.templates = make(map[string]map[string]any, len(decoded))
+	}
+	for slug, model := range decoded {
+		discoveredCodexClientTemplates.templates[slug] = model
+	}
+}
+
+// DiscoveredCodexClientTemplates returns the discovered templates by slug.
+// Callers must clone a template before modifying it.
+func DiscoveredCodexClientTemplates() map[string]map[string]any {
+	discoveredCodexClientTemplates.mu.RLock()
+	defer discoveredCodexClientTemplates.mu.RUnlock()
+	templates := make(map[string]map[string]any, len(discoveredCodexClientTemplates.templates))
+	for slug, model := range discoveredCodexClientTemplates.templates {
+		templates[slug] = model
+	}
+	return templates
+}

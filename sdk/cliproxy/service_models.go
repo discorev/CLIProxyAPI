@@ -67,6 +67,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		return
 	}
 	var models []*ModelInfo
+	var discoveryCatalog []*ModelInfo // Catalog section discovered models are compared against.
 	switch provider {
 	case constant.Gemini:
 		models = registry.GetGeminiModels()
@@ -124,6 +125,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = applyExcludedModels(models, excluded)
 	case "claude":
 		models = registry.GetClaudeModels()
+		discoveryCatalog = models
 		if entry := s.resolveConfigClaudeKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildClaudeConfigModels(entry)
@@ -143,22 +145,8 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			break
 		}
 
-		codexPlanType := ""
-		if a.Attributes != nil {
-			codexPlanType = strings.TrimSpace(a.Attributes["plan_type"])
-		}
-		switch strings.ToLower(codexPlanType) {
-		case "pro":
-			models = registry.GetCodexProModels()
-		case "plus":
-			models = registry.GetCodexPlusModels()
-		case "team", "business", "go":
-			models = registry.GetCodexTeamModels()
-		case "free":
-			models = registry.GetCodexFreeModels()
-		default:
-			models = registry.GetCodexProModels()
-		}
+		models = codexCatalogModelsForPlan(a.Attributes["plan_type"])
+		discoveryCatalog = models
 		models = applyExcludedModels(models, excluded)
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		models = registry.GetKimiModels()
@@ -305,6 +293,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	}
 	s.restrictedAccess.mu.RLock()
 	defer s.restrictedAccess.mu.RUnlock()
+	if discoveryCatalog != nil {
+		models = append(models, applyExcludedModels(s.discoveredModelsLocked(a, discoveryCatalog), excluded)...)
+	}
 	models = s.filterRestrictedModelsLocked(a, models)
 	models = applyOAuthModelAliasForAuth(s.cfg, provider, authKind, a.Attributes, models)
 	if ctx.Err() != nil {

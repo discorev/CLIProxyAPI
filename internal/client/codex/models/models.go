@@ -227,7 +227,27 @@ func applyCodexClientNonTemplatePriorities(result []map[string]any, templates ma
 
 func loadCodexClientModelTemplates() (map[string]map[string]any, map[string]any, error) {
 	raw, revision := registry.GetCodexClientModelsSnapshot()
-	return loadCodexClientModelTemplatesSnapshot(raw, revision)
+	templates, defaultTemplate, err := loadCodexClientModelTemplatesSnapshot(raw, revision)
+	if err != nil {
+		return templates, defaultTemplate, err
+	}
+	return mergeDiscoveredCodexClientTemplates(templates, registry.DiscoveredCodexClientTemplates()), defaultTemplate, nil
+}
+
+// mergeDiscoveredCodexClientTemplates adds upstream templates for discovered
+// slugs; curated templates always win.
+func mergeDiscoveredCodexClientTemplates(templates, discovered map[string]map[string]any) map[string]map[string]any {
+	if len(discovered) == 0 {
+		return templates
+	}
+	merged := make(map[string]map[string]any, len(templates)+len(discovered))
+	for slug, template := range discovered {
+		merged[slug] = template
+	}
+	for slug, template := range templates {
+		merged[slug] = template
+	}
+	return merged
 }
 
 func loadCodexClientModelTemplatesSnapshot(raw []byte, revision uint64) (map[string]map[string]any, map[string]any, error) {

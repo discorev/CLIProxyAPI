@@ -63,7 +63,7 @@ func (e *MetaExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth
 	return nil
 }
 
-func (e *MetaExecutor) ListUpstreamModels(ctx context.Context, auth *cliproxyauth.Auth) ([]string, error) {
+func (e *MetaExecutor) ListUpstreamModels(ctx context.Context, auth *cliproxyauth.Auth) ([]cliproxyauth.UpstreamModel, error) {
 	// Key minting and persistence belong to the manager's request path.
 	if _, token := metaCreds(auth); token == "" {
 		return nil, fmt.Errorf("meta model list: no minted API key")

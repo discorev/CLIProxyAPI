@@ -299,7 +299,7 @@ func (e *ClaudeExecutor) FetchUsage(ctx context.Context, auth *cliproxyauth.Auth
 	return helps.FetchClaudeUsage(ctx, auth, e.HttpRequest)
 }
 
-func (e *ClaudeExecutor) ListUpstreamModels(ctx context.Context, auth *cliproxyauth.Auth) ([]string, error) {
+func (e *ClaudeExecutor) ListUpstreamModels(ctx context.Context, auth *cliproxyauth.Auth) ([]cliproxyauth.UpstreamModel, error) {
 	return helps.FetchClaudeModelList(ctx, auth, e.HttpRequest)
 }
 
