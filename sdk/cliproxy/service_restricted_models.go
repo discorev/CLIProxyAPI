@@ -168,7 +168,7 @@ func (s *Service) filterRestrictedModelsLocked(auth *coreauth.Auth, models []*Mo
 
 func (s *Service) explicitRestrictedModelIDs(auth *coreauth.Auth) map[string]struct{} {
 	if auth.AuthKind() != coreauth.AuthKindAPIKey {
-		return nil
+		return definedModelIDs(s.cfg, auth)
 	}
 	var names []string
 	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
@@ -355,6 +355,13 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 		restrictedIDs = restrictedCatalogIDs
 	}
 	restricted := restrictedIDs(auth.Provider)
+	// Defined models are registered without a grant, so they never need a refresh.
+	if defined := s.explicitRestrictedModelIDs(auth); len(defined) > 0 {
+		restricted = maps.Clone(restricted)
+		for id := range defined {
+			delete(restricted, id)
+		}
+	}
 	granted := make(map[string]struct{})
 	for id := range restricted {
 		if _, ok := listed[id]; ok {

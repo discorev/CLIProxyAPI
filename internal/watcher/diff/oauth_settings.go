@@ -3,6 +3,7 @@ package diff
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -82,6 +83,11 @@ func summarizeOAuthSettingsList(list []config.OAuthModelSetting) OAuthSettingsSu
 		key := name + "->" + alias
 		if setting.MaxContextLength > 0 {
 			key += fmt.Sprintf("|max-context-length=%d", setting.MaxContextLength)
+		}
+		if setting.DefinesModel() {
+			if definition, errMarshal := json.Marshal(setting); errMarshal == nil {
+				key += "|" + string(definition)
+			}
 		}
 		if _, exists := seen[key]; exists {
 			continue

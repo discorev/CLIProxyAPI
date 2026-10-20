@@ -130,11 +130,10 @@ func (cfg *Config) SanitizeOAuthSettings() {
 				continue
 			}
 			seen[key] = struct{}{}
-			reversed = append(reversed, OAuthModelSetting{
-				Name:             name,
-				Alias:            alias,
-				MaxContextLength: entry.MaxContextLength,
-			})
+			entry.Name = name
+			entry.Alias = alias
+			entry.DisplayName = strings.TrimSpace(entry.DisplayName)
+			reversed = append(reversed, entry)
 		}
 		if len(reversed) > 0 {
 			clean := make([]OAuthModelSetting, len(reversed))

@@ -239,24 +239,11 @@ func synthesizeClaudeModel(model coreauth.UpstreamModel, catalog []*ModelInfo, u
 
 	var info ModelInfo
 	if predecessor != nil {
-		info = *predecessor
-		if predecessor.Thinking != nil {
-			thinking := *predecessor.Thinking
-			info.Thinking = &thinking
-		}
+		info = cloneTemplateModel(predecessor)
 		info.Description = ""
 		info.Version = ""
 	} else {
-		info = ModelInfo{
-			Object:                    "model",
-			OwnedBy:                   "anthropic",
-			Type:                      "claude",
-			ContextLength:             discoveredClaudeContextLength,
-			MaxCompletionTokens:       discoveredClaudeMaxCompletionTokens,
-			SupportedInputModalities:  []string{"text"},
-			SupportedOutputModalities: []string{"text"},
-			Thinking:                  &registry.ThinkingSupport{Min: discoveredClaudeThinkingMin, Max: discoveredClaudeThinkingMax},
-		}
+		info = claudeDefaultModel()
 		if object.Capabilities.ImageInput.Supported {
 			info.SupportedInputModalities = append(info.SupportedInputModalities, "image")
 		}
@@ -277,6 +264,53 @@ func synthesizeClaudeModel(model coreauth.UpstreamModel, catalog []*ModelInfo, u
 	return &info
 }
 
+// cloneTemplateModel copies a catalog model so callers can change its thinking
+// support without mutating the catalog.
+func cloneTemplateModel(template *ModelInfo) ModelInfo {
+	info := *template
+	if template.Thinking != nil {
+		thinking := *template.Thinking
+		info.Thinking = &thinking
+	}
+	return info
+}
+
+// newestCatalogModel returns the matching catalog model created last (the
+// first one on ties), or nil.
+func newestCatalogModel(catalog []*ModelInfo, match func(*ModelInfo) bool) *ModelInfo {
+	var newest *ModelInfo
+	for _, info := range catalog {
+		if info != nil && match(info) && (newest == nil || info.Created > newest.Created) {
+			newest = info
+		}
+	}
+	return newest
+}
+
+// claudeDefaultModel is the Claude entry used when no catalog model can be inherited.
+func claudeDefaultModel() ModelInfo {
+	return ModelInfo{
+		Object:                    "model",
+		OwnedBy:                   "anthropic",
+		Type:                      "claude",
+		ContextLength:             discoveredClaudeContextLength,
+		MaxCompletionTokens:       discoveredClaudeMaxCompletionTokens,
+		SupportedInputModalities:  []string{"text"},
+		SupportedOutputModalities: []string{"text"},
+		Thinking:                  &registry.ThinkingSupport{Min: discoveredClaudeThinkingMin, Max: discoveredClaudeThinkingMax},
+	}
+}
+
+// codexTemplateModel clones the newest model of a Codex catalog section, or
+// returns Codex defaults when the section is empty.
+func codexTemplateModel(catalog []*ModelInfo) ModelInfo {
+	template := newestCatalogModel(catalog, func(*ModelInfo) bool { return true })
+	if template == nil {
+		return ModelInfo{Object: "model", OwnedBy: "openai", Type: "openai", MaxCompletionTokens: discoveredCodexMaxCompletionTokens}
+	}
+	return cloneTemplateModel(template)
+}
+
 type codexUpstreamModel struct {
 	Slug                     string   `json:"slug"`
 	DisplayName              string   `json:"display_name"`
@@ -295,20 +329,7 @@ func synthesizeCodexModel(model coreauth.UpstreamModel, catalog []*ModelInfo) *M
 	if json.Unmarshal(model.Raw, &object) != nil {
 		return nil
 	}
-	var template *ModelInfo
-	for _, info := range catalog {
-		if info != nil && (template == nil || info.Created > template.Created) {
-			template = info
-		}
-	}
-	info := ModelInfo{Object: "model", OwnedBy: "openai", Type: "openai", MaxCompletionTokens: discoveredCodexMaxCompletionTokens}
-	if template != nil {
-		info = *template
-		if template.Thinking != nil {
-			thinking := *template.Thinking
-			info.Thinking = &thinking
-		}
-	}
+	info := codexTemplateModel(catalog)
 	info.ID = model.ID
 	info.DisplayName = object.DisplayName
 	info.Description = object.Description

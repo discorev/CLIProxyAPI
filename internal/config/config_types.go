@@ -476,6 +476,24 @@ type OAuthModelSetting struct {
 
 	// MaxContextLength overrides the context window advertised to Codex clients.
 	MaxContextLength int `yaml:"max-context-length,omitempty" json:"max-context-length,omitempty"`
+
+	// The fields below define or override the model. An entry without an alias
+	// that sets any of them defines Name on every credential of the channel
+	// that does not already list it.
+
+	// DisplayName overrides the human-readable name shown in model catalogs.
+	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
+	// ContextLength overrides the model's context window in every model list.
+	ContextLength int `yaml:"context-length,omitempty" json:"context-length,omitempty"`
+	// MaxCompletionTokens overrides the model's maximum output tokens.
+	MaxCompletionTokens int `yaml:"max-completion-tokens,omitempty" json:"max-completion-tokens,omitempty"`
+	// Thinking replaces the model's thinking/reasoning capability.
+	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
+}
+
+// DefinesModel reports whether the setting carries model definition fields.
+func (s OAuthModelSetting) DefinesModel() bool {
+	return s.DisplayName != "" || s.ContextLength > 0 || s.MaxCompletionTokens > 0 || s.Thinking != nil
 }
 
 // GetMaxContextLength returns the configured maximum context length override.

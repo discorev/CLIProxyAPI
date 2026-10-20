@@ -996,12 +996,50 @@ oauth:
   # OAuth provider model settings (per channel)
   # Allows overriding model-level capabilities (such as context window) for OAuth credentials.
   # Supported channels: vertex, aistudio, antigravity, claude, codex, kimi, xai, meta.
+  # Optional per-entry fields:
+  #   max-context-length: 524288     # context window; when context-length is also set, only what Codex clients
+  #                                  # (context_window) and the OpenAI-format list (max_context_length) are told
+  #   display-name: "Model Name"     # catalog display name
+  #   context-length: 1000000        # context window in every model list (Codex, Anthropic and OpenAI formats)
+  #   max-completion-tokens: 128000  # maximum output tokens
+  #   thinking:                      # replaces the model's thinking support
+  #     levels: ["low", "medium", "high"]
+  # An entry without an alias that sets display-name, context-length, max-completion-tokens or thinking
+  # also defines the model on every credential of the channel that does not list it (for example a model
+  # the catalog has not caught up with). Missing fields are inherited: Claude from the newest catalog model
+  # of the same family (claude-<line>-), Codex from the newest model of the plan's catalog section, other
+  # channels get only the provider's owner and type. Excluded models are never defined, and defined models
+  # skip restricted-access filtering. Entries with only max-context-length keep overriding listed models only.
+  # Per field, an auth file's "models" entry wins over settings, settings over the catalog, and the catalog
+  # over models discovered from the upstream model list.
   # settings:
   #   codex:
   #     - name: "gpt-6-sol"
   #       max-context-length: 524288 # overrides context window advertised to Codex clients
   #     - name: "gpt-6-astra"
   #       max-context-length: 1048576
+  #   claude:
+  #     - name: "claude-fable-6"     # not in the catalog yet: defined on every Claude OAuth credential
+  #       display-name: "Claude Fable 6"
+  #       context-length: 1000000
+  #
+  # Per-auth model definitions can be stored in an OAuth auth JSON file as "models": entries in the catalog
+  # models.json shape (id, display_name, context_length, max_completion_tokens, thinking, supportedInputModalities,
+  # supported_parameters, native_capabilities, ...). An entry whose id the credential already lists overrides only
+  # the fields it contains ("thinking": null clears thinking); an unknown id defines a new model on that credential,
+  # inheriting missing fields as above. "upstream_id" lists the model under "id" but sends "upstream_id" upstream.
+  # NOTE: /v1/models shows one entry per model ID. When credentials define the same ID differently, it shows the
+  # entry of whichever credential registered (or re-registered) that model most recently.
+  # Example auth JSON:
+  # {
+  #   "type": "claude",
+  #   "email": "user@example.com",
+  #   "models": [
+  #     {"id": "claude-opus-5", "context_length": 500000},
+  #     {"id": "claude-secret-preview", "display_name": "Secret Preview", "thinking": null},
+  #     {"id": "fable-latest", "upstream_id": "claude-fable-5-1"}
+  #   ]
+  # }
 
   # OAuth provider excluded models
   # excluded-models:

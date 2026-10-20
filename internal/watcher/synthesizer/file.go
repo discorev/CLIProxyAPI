@@ -103,7 +103,8 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				return nil, nil
 			}
 			perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
-			perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
+			modelDefinitions := coreauth.ParseModelDefinitions(metadata["models"])
+			perAccountModelAliases := append(extractOAuthModelAliasesFromMetadata(metadata), coreauth.ModelDefinitionAliases(modelDefinitions)...)
 			disabled, _ := metadata["disabled"].(bool)
 			for index, auth := range auths {
 				if auth == nil {
@@ -145,6 +146,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 					}
 				}
 				coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
+				coreauth.SetModelDefinitionsAttribute(auth, modelDefinitions)
 				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
 				applyFingerprintProfileAttribute(auth, metadata)
@@ -192,7 +194,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 
 	// Read per-account excluded models from the OAuth JSON file.
 	perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
-	perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
+	// Per-account model definitions; an upstream_id routes through a per-account alias.
+	modelDefinitions := coreauth.ParseModelDefinitions(metadata["models"])
+	perAccountModelAliases := append(extractOAuthModelAliasesFromMetadata(metadata), coreauth.ModelDefinitionAliases(modelDefinitions)...)
 
 	a := &coreauth.Auth{
 		ID:       id,
@@ -227,6 +231,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	}
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
+	coreauth.SetModelDefinitionsAttribute(a, modelDefinitions)
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
 	applyFingerprintProfileAttribute(a, metadata)
 	// For Kimi auth files, preserve domain and base_url attributes.

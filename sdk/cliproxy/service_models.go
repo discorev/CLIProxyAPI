@@ -302,8 +302,8 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		return
 	}
 	models = appendUniqueModels(models, s.filterRestrictedModelsLocked(a, pluginModels))
+	models = applyModelDefinitionsForAuth(s.cfg, a, provider, excluded, models)
 	if len(models) > 0 {
-		models = applyOAuthSettingsForAuth(s.cfg, provider, authKind, models)
 		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		if strings.EqualFold(strings.TrimSpace(a.Provider), "antigravity") {
 			s.asyncProbeAntigravityCapabilities(ctx, a, key)
@@ -1177,14 +1177,34 @@ func applyOAuthSettingEntries(settings []config.OAuthModelSetting, models []*Mod
 			continue
 		}
 		setting := config.ResolveOAuthModelSetting(settings, model.ID, model.MetadataModelID, model.Name)
-		if setting != nil && setting.MaxContextLength > 0 {
-			clone := *model
-			clone.ContextLength = setting.MaxContextLength
-			clone.MaxContextLength = setting.MaxContextLength
-			out = append(out, &clone)
-		} else {
+		if setting == nil || (setting.MaxContextLength <= 0 && !setting.DefinesModel()) {
 			out = append(out, model)
+			continue
 		}
+		clone := *model
+		// context-length sets the window in every list; max-context-length, when
+		// also set, overrides only what Codex clients are told.
+		if setting.ContextLength > 0 {
+			clone.ContextLength = setting.ContextLength
+			clone.MaxContextLength = setting.ContextLength
+		}
+		if setting.MaxContextLength > 0 {
+			clone.MaxContextLength = setting.MaxContextLength
+			if setting.ContextLength <= 0 {
+				clone.ContextLength = setting.MaxContextLength
+			}
+		}
+		if setting.DisplayName != "" {
+			clone.DisplayName = setting.DisplayName
+		}
+		if setting.MaxCompletionTokens > 0 {
+			clone.MaxCompletionTokens = setting.MaxCompletionTokens
+		}
+		if setting.Thinking != nil {
+			clone.Thinking = modelconfig.NormalizeThinkingSupport(setting.Thinking)
+			clone.ExplicitThinking = true
+		}
+		out = append(out, &clone)
 	}
 	return out
 }
