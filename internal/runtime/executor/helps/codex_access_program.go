@@ -38,6 +38,16 @@ func CodexAccessProgramRoute(auth *cliproxyauth.Auth, model string) (string, str
 	return info.MetadataModelID, info.AccessProgram
 }
 
+// RequestedCodexAccessProgram returns the non-standard access_programs.cyber a
+// client body asks for, lowercased, or "" for a standard or absent program.
+func RequestedCodexAccessProgram(body []byte) string {
+	program := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "access_programs.cyber").String()))
+	if program == "standard" {
+		return ""
+	}
+	return program
+}
+
 // ApplyCodexAccessProgram sets access_programs.cyber to a variant's program,
 // replacing any client value. It is built-in translation, so callers apply it
 // before user payload rules.

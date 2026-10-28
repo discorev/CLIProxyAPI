@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -186,6 +187,100 @@ func TestCodexWebsocketsSendVariantAccessProgram(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+	if len(frames) != 2 || frames[0] != "gpt-6-sol daybreak_blue" || frames[1] != "gpt-6-sol daybreak_blue" {
+		t.Fatalf("frames = %q, want both turns on gpt-6-sol with daybreak_blue", frames)
+	}
+}
+
+// runCodexAccessProgramDuplex opens a duplex session for model with initial,
+// sends followUp after the first response completes, and returns the frames
+// upstream received ("model program") and the stream error, if any.
+func runCodexAccessProgramDuplex(t *testing.T, authID, model, initial, followUp string) ([]string, error) {
+	t.Helper()
+	var mu sync.Mutex
+	var frames []string
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, errUpgrade := upgrader.Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			t.Errorf("upgrade websocket: %v", errUpgrade)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for turn := 1; ; turn++ {
+			_, payload, errRead := conn.ReadMessage()
+			if errRead != nil {
+				return
+			}
+			mu.Lock()
+			frames = append(frames, gjson.GetBytes(payload, "model").String()+" "+gjson.GetBytes(payload, "access_programs.cyber").String())
+			mu.Unlock()
+			id := fmt.Sprintf("resp-%d", turn)
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created","response":{"id":"`+id+`","output":[]}}`))
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"`+id+`","output":[]}}`))
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	input := make(chan cliproxyexecutor.WebsocketInput, 1)
+	ctx = cliproxyexecutor.WithWebsocketInput(cliproxyexecutor.WithDownstreamWebsocket(ctx), input)
+	exec := NewCodexWebsocketsExecutor(&config.Config{Codex: config.CodexConfig{ResponseSteering: true}})
+	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+	auth := &cliproxyauth.Auth{ID: authID, Provider: "codex", Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL, "websockets": "true"}}
+	registerCodexAccessProgramVariant(t, auth)
+	opts := cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("codex"),
+		OriginalRequest: []byte(initial),
+		Metadata:        map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: authID},
+	}
+	result, errStream := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{Model: model, Payload: []byte(initial)}, opts)
+	if errStream != nil {
+		t.Fatalf("ExecuteStream: %v", errStream)
+	}
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			break
+		}
+		switch gjson.GetBytes(chunk.Payload, "type").String() + " " + gjson.GetBytes(chunk.Payload, "response.id").String() {
+		case "response.completed resp-1":
+			input <- cliproxyexecutor.WebsocketInput{Payload: []byte(followUp)}
+		case "response.completed resp-2":
+			cancel()
+		}
+	}
+	for range result.Chunks {
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return append([]string(nil), frames...), streamErr
+}
+
+// A duplex follow-up asking for a program the session's credential was not
+// selected for is replayed, so the handler routes it to a credential that lists it.
+func TestCodexDuplexFollowUpWithNewAccessProgramRequiresReplay(t *testing.T) {
+	frames, errStream := runCodexAccessProgramDuplex(t, "codex-access-program-duplex-base", "gpt-6-sol",
+		`{"model":"gpt-6-sol","input":[]}`,
+		`{"type":"response.create","model":"gpt-6-sol","previous_response_id":"resp-1","access_programs":{"cyber":"daybreak_blue"},"input":[]}`)
+	if !cliproxyexecutor.IsUpstreamWebsocketReplayRequired(errStream) {
+		t.Fatalf("stream error = %v, want replay required", errStream)
+	}
+	if len(frames) != 1 || frames[0] != "gpt-6-sol " {
+		t.Fatalf("frames = %q, want only the standard initial turn", frames)
+	}
+}
+
+// On a variant session, follow-ups for the base model keep the variant's program.
+func TestCodexDuplexVariantFollowUpKeepsAccessProgram(t *testing.T) {
+	frames, errStream := runCodexAccessProgramDuplex(t, "codex-access-program-duplex-variant", "gpt-6-sol-daybreak-blue",
+		`{"model":"gpt-6-sol","access_programs":{"cyber":"daybreak_blue"},"input":[]}`,
+		`{"type":"response.create","model":"gpt-6-sol","previous_response_id":"resp-1","access_programs":{"cyber":"daybreak_blue"},"input":[]}`)
+	if errStream != nil && !errors.Is(errStream, context.Canceled) {
+		t.Fatalf("stream error = %v", errStream)
+	}
 	if len(frames) != 2 || frames[0] != "gpt-6-sol daybreak_blue" || frames[1] != "gpt-6-sol daybreak_blue" {
 		t.Fatalf("frames = %q, want both turns on gpt-6-sol with daybreak_blue", frames)
 	}
