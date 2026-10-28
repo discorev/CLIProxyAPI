@@ -299,6 +299,15 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	if routeDecision.ExecutorPluginID != "" {
 		return h.streamWithPluginExecutor(ctx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
 	}
+	if routeDecision.Provider == "" {
+		var errProgram *interfaces.ErrorMessage
+		if modelName, errProgram = h.resolveAccessProgramModel(modelName, rawJSON); errProgram != nil {
+			errChan := make(chan *interfaces.ErrorMessage, 1)
+			errChan <- errProgram
+			close(errChan)
+			return nil, nil, errChan
+		}
+	}
 	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
 	if errMsg != nil {
 		errChan := make(chan *interfaces.ErrorMessage, 1)

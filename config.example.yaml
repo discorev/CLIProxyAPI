@@ -1044,6 +1044,14 @@ oauth:
   #     {"id": "fable-latest", "upstream_id": "claude-fable-5-1"}
   #   ]
   # }
+  #
+  # Daybreak variants: for each listed model whose Codex upstream model list grants a non-standard access program
+  # (available_access_programs.cyber), a Codex OAuth credential also registers "<model>-<program>", for example
+  # gpt-6-sol-daybreak-blue. A variant copies the model's final entry (after settings and auth file overrides),
+  # sends the base model upstream with "access_programs": {"cyber": "daybreak_blue"}, and replaces any client
+  # value. Payload rules still apply after it. Exclude a variant by its ID. A request for a base model with a
+  # non-standard access_programs.cyber is routed to the matching variant; when no credential has it the request
+  # fails with model_not_found instead of being sent as standard.
 
   # OAuth provider excluded models
   # excluded-models:

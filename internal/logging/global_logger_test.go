@@ -406,6 +406,9 @@ func TestLogFormatterPrintsUsageLifecycleFields(t *testing.T) {
 		{"usage sweep stopped", log.Fields{"reason": "stop_requested"}, `usage sweep stopped reason="stop_requested"`},
 		{"discovered models changed", log.Fields{"provider": "claude", "count": 1, "added": "claude-new-1", "removed": ""},
 			`discovered models changed provider=claude count=1 added=claude-new-1 removed=`},
+		{"codex access program not honoured", log.Fields{"provider": "codex", "model": "gpt-6-sol-daybreak-blue", "auth_id": "a",
+			"access_program": "daybreak_blue", "served_access_program": "standard"},
+			`codex access program not honoured provider=codex model=gpt-6-sol-daybreak-blue auth_id="a" access_program="daybreak_blue" served_access_program="standard"`},
 	} {
 		t.Run(tt.message+"/"+tt.want, func(t *testing.T) {
 			entry := log.NewEntry(log.New())

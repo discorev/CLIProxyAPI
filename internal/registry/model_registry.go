@@ -45,6 +45,9 @@ type ModelInfo struct {
 	MetadataModelID string `json:"-"`
 	// RestrictedAccess is catalog-only metadata; it must never appear in model responses.
 	RestrictedAccess bool `json:"-"`
+	// AccessProgram is the Codex access_programs.cyber value a Daybreak variant
+	// sends with its MetadataModelID. It is internal and never appears in model responses.
+	AccessProgram string `json:"-"`
 	// ExplicitThinking indicates thinking/reasoning configuration was explicitly configured for this model.
 	ExplicitThinking bool `json:"-"`
 	// ExplicitInputModalities indicates input modalities were explicitly configured for this model.
@@ -1921,6 +1924,13 @@ func (r *ModelRegistry) ClientRegistrationEpoch(clientID string) uint64 {
 		return 0
 	}
 	return r.clientEpochs[clientID]
+}
+
+// GetClientModelInfo returns the model info a client registered for modelID, or nil.
+func (r *ModelRegistry) GetClientModelInfo(clientID, modelID string) *ModelInfo {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	return cloneModelInfo(r.clientModelInfos[clientID][modelID])
 }
 
 // GetModelsForClient returns the models registered for a specific client.
