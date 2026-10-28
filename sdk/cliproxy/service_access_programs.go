@@ -33,7 +33,8 @@ func (v accessProgramVariant) id() string {
 }
 
 // accessProgramVariants lists the non-standard programs of visible upstream
-// Codex models, in upstream order. Hidden models get no variant.
+// Codex models, in upstream order. Hidden models get no variant, and neither
+// does a model that does not also list standard.
 func accessProgramVariants(upstream []coreauth.UpstreamModel) []accessProgramVariant {
 	var variants []accessProgramVariant
 	for _, model := range upstream {
@@ -44,11 +45,21 @@ func accessProgramVariants(upstream []coreauth.UpstreamModel) []accessProgramVar
 		if json.Unmarshal(model.Raw, &object) != nil || strings.EqualFold(object.Visibility, "hide") {
 			continue
 		}
+		var programs []string
+		hasStandard := false
 		for _, program := range object.AvailableAccessPrograms.Cyber {
 			program = strings.ToLower(strings.TrimSpace(program))
-			if program != "" && program != standardAccessProgram {
-				variants = append(variants, accessProgramVariant{base: model.ID, program: program})
+			if program == standardAccessProgram {
+				hasStandard = true
+			} else if program != "" {
+				programs = append(programs, program)
 			}
+		}
+		if !hasStandard {
+			continue
+		}
+		for _, program := range programs {
+			variants = append(variants, accessProgramVariant{base: model.ID, program: program})
 		}
 	}
 	return variants

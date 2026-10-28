@@ -61,6 +61,11 @@ func TestAccessProgramVariantsFromUpstreamList(t *testing.T) {
 		t.Fatalf("variant replaced an already resolved model: %+v", got)
 	}
 
+	alias := []coreauth.UpstreamModel{codexAccessProgramObject("gpt-fixture-single", "daybreak_blue"), codexAccessProgramObject("gpt-fixture-a", "standard", "daybreak_blue")}
+	if got := accessProgramVariants(alias); len(got) != 1 || got[0].base != "gpt-fixture-a" {
+		t.Fatalf("single-program alias got a variant: %+v", got)
+	}
+
 	apiKey := auth.Clone()
 	apiKey.Attributes = map[string]string{"auth_kind": "apikey", "api_key": "fake-key"}
 	if got := accessProgramVariantsForTest(service, apiKey, nil, models); len(got) != len(models) {
