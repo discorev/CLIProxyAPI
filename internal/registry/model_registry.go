@@ -1933,6 +1933,27 @@ func (r *ModelRegistry) GetClientModelInfo(clientID, modelID string) *ModelInfo 
 	return cloneModelInfo(r.clientModelInfos[clientID][modelID])
 }
 
+// AccessProgramVariantClients reports how clients register modelID for an
+// access program: genuine counts Daybreak variants carrying program, and
+// ordinary counts any other model registered under the same ID.
+func (r *ModelRegistry) AccessProgramVariantClients(modelID, program string) (genuine, ordinary int) {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	for _, infos := range r.clientModelInfos {
+		for id, info := range infos {
+			if info == nil || !strings.EqualFold(id, modelID) {
+				continue
+			}
+			if strings.EqualFold(info.AccessProgram, program) {
+				genuine++
+			} else {
+				ordinary++
+			}
+		}
+	}
+	return genuine, ordinary
+}
+
 // GetModelsForClient returns the models registered for a specific client.
 // Parameters:
 //   - clientID: The client identifier (typically auth file name or auth ID)
