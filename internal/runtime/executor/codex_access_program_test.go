@@ -285,3 +285,33 @@ func TestCodexDuplexVariantFollowUpKeepsAccessProgram(t *testing.T) {
 		t.Fatalf("frames = %q, want both turns on gpt-6-sol with daybreak_blue", frames)
 	}
 }
+
+// A follow-up that changes the program on the base model is replayed, even
+// though the handler routed the session to a variant; only a follow-up naming
+// the variant itself keeps the variant's program.
+func TestCodexDuplexFollowUpChangingAccessProgramRequiresReplay(t *testing.T) {
+	for _, followUp := range []string{
+		`{"type":"response.create","model":"gpt-6-sol","previous_response_id":"resp-1","access_programs":{"cyber":"daybreak_red"},"input":[]}`,
+		`{"type":"response.create","previous_response_id":"resp-1","access_programs":{"cyber":"daybreak_red"},"input":[]}`,
+		`{"type":"response.create","model":"gpt-6-sol","previous_response_id":"resp-1","input":[]}`,
+	} {
+		frames, errStream := runCodexAccessProgramDuplex(t, "codex-access-program-duplex-change", "gpt-6-sol-daybreak-blue",
+			`{"model":"gpt-6-sol","access_programs":{"cyber":"daybreak_blue"},"input":[]}`, followUp)
+		if !cliproxyexecutor.IsUpstreamWebsocketReplayRequired(errStream) {
+			t.Fatalf("follow-up %s: stream error = %v, want replay required", followUp, errStream)
+		}
+		if len(frames) != 1 || frames[0] != "gpt-6-sol daybreak_blue" {
+			t.Fatalf("follow-up %s: frames = %q, want only the initial turn", followUp, frames)
+		}
+	}
+
+	frames, errStream := runCodexAccessProgramDuplex(t, "codex-access-program-duplex-explicit", "gpt-6-sol-daybreak-blue",
+		`{"model":"gpt-6-sol-daybreak-blue","input":[]}`,
+		`{"type":"response.create","model":"gpt-6-sol-daybreak-blue","previous_response_id":"resp-1","access_programs":{"cyber":"daybreak_red"},"input":[]}`)
+	if errStream != nil && !errors.Is(errStream, context.Canceled) {
+		t.Fatalf("explicit variant: stream error = %v", errStream)
+	}
+	if len(frames) != 2 || frames[1] != "gpt-6-sol daybreak_blue" {
+		t.Fatalf("explicit variant: frames = %q, want the follow-up on daybreak_blue", frames)
+	}
+}

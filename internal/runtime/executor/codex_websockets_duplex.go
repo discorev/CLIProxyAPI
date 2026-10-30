@@ -158,12 +158,16 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				return false
 			}
 			// The handler selected this credential for the initial request's access
-			// program. A follow-up asking for another non-standard program must be
-			// replayed so it is routed to a credential whose model list includes it.
-			// On a variant the variant's program replaces the client value, as on
-			// any request.
-			if program := helps.RequestedCodexAccessProgram(payload); program != "" && program != helps.RequestedCodexAccessProgram(initial.originalPayload) {
-				if _, variantProgram := helps.CodexAccessProgramRoute(auth, thinking.ParseSuffix(req.Model).ModelName); variantProgram == "" {
+			// program. A follow-up asking for another program must be replayed so it
+			// is routed again, to a credential whose model list includes it. Only a
+			// follow-up that names a variant itself keeps the variant's program, as
+			// on any request.
+			if helps.RequestedCodexAccessProgram(payload) != helps.RequestedCodexAccessProgram(initial.originalPayload) {
+				clientModel := model
+				if clientModel == "" {
+					clientModel = strings.TrimSpace(gjson.GetBytes(initial.originalPayload, "model").String())
+				}
+				if _, variantProgram := helps.CodexAccessProgramRoute(auth, thinking.ParseSuffix(clientModel).ModelName); variantProgram == "" {
 					fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
 					return false
 				}
