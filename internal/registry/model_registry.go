@@ -1863,9 +1863,13 @@ func (r *ModelRegistry) GetFirstAvailableModel(handlerType string) (string, erro
 		return createdI > createdJ
 	})
 
-	// Find the first model with available clients
+	// Find the first model with available clients. Daybreak variants are
+	// skipped, so "auto" never selects a non-standard access program.
 	for _, model := range models {
 		if modelID, ok := model["id"].(string); ok {
+			if info := r.GetModelInfo(modelID, ""); info != nil && info.AccessProgram != "" {
+				continue
+			}
 			if count := r.GetModelCount(modelID); count > 0 {
 				return modelID, nil
 			}
@@ -1934,8 +1938,9 @@ func (r *ModelRegistry) GetClientModelInfo(clientID, modelID string) *ModelInfo 
 }
 
 // AccessProgramVariantClients reports how clients register modelID for an
-// access program: genuine counts Daybreak variants carrying program, and
-// ordinary counts any other model registered under the same ID.
+// access program: genuine counts Daybreak variants carrying program (any
+// program when program is ""), and ordinary counts any other model registered
+// under the same ID.
 func (r *ModelRegistry) AccessProgramVariantClients(modelID, program string) (genuine, ordinary int) {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
@@ -1944,7 +1949,7 @@ func (r *ModelRegistry) AccessProgramVariantClients(modelID, program string) (ge
 			if info == nil || !strings.EqualFold(id, modelID) {
 				continue
 			}
-			if strings.EqualFold(info.AccessProgram, program) {
+			if info.AccessProgram != "" && (program == "" || strings.EqualFold(info.AccessProgram, program)) {
 				genuine++
 			} else {
 				ordinary++

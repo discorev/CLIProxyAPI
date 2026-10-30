@@ -155,6 +155,62 @@ func TestExecuteRejectsAccessProgramWithoutVariantOnCodexProviderRoute(t *testin
 	}
 }
 
+// A requested variant is checked against every registration, whatever the
+// registration order and whether or not the body asks for a program, so an
+// ordinary model sharing its ID is never selected for it.
+func TestResolveAccessProgramModelRejectsVariantSharedWithOrdinaryModel(t *testing.T) {
+	reg := registry.GetGlobalRegistry()
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+	register := map[string]func(){
+		"genuine": func() {
+			reg.RegisterClient("test-access-program-shared-genuine", "codex", []*registry.ModelInfo{{ID: "gpt-access-shared-test-daybreak-blue", MetadataModelID: "gpt-access-shared-test", AccessProgram: "daybreak_blue"}})
+		},
+		"ordinary": func() {
+			reg.RegisterClient("test-access-program-shared-alias", "codex", []*registry.ModelInfo{{ID: "gpt-access-shared-test-daybreak-blue", MetadataModelID: "gpt-access-shared-test"}})
+		},
+	}
+	t.Cleanup(func() {
+		reg.UnregisterClient("test-access-program-shared-genuine")
+		reg.UnregisterClient("test-access-program-shared-alias")
+	})
+	for _, order := range [][]string{{"genuine", "ordinary"}, {"ordinary", "genuine"}} {
+		reg.UnregisterClient("test-access-program-shared-genuine")
+		reg.UnregisterClient("test-access-program-shared-alias")
+		for _, name := range order {
+			register[name]()
+		}
+		for _, body := range []string{`{"input":"hi"}`, `{"access_programs":{"cyber":"daybreak_blue"}}`, `{"access_programs":{"cyber":"standard"}}`} {
+			got, errMsg := handler.resolveAccessProgramModel("gpt-access-shared-test-daybreak-blue", []byte(body))
+			if errMsg == nil || gjson.Get(errMsg.Error.Error(), "error.code").String() != "model_not_found" {
+				t.Fatalf("%v registered, body %s: got %q, %+v; want model_not_found", order, body, got, errMsg)
+			}
+		}
+	}
+}
+
+// "auto" with a non-standard program routes to the variant of the model auto
+// selects, and auto itself never selects a variant.
+func TestResolveAccessProgramModelResolvesAuto(t *testing.T) {
+	reg := registry.GetGlobalRegistry()
+	const created = int64(1) << 60 // newer than any other test model, so auto selects it
+	reg.RegisterClient("test-access-program-auto", "codex", []*registry.ModelInfo{
+		{ID: "gpt-access-auto-test-daybreak-blue", MetadataModelID: "gpt-access-auto-test", AccessProgram: "daybreak_blue", Created: created},
+		{ID: "gpt-access-auto-test", Created: created},
+	})
+	t.Cleanup(func() { reg.UnregisterClient("test-access-program-auto") })
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+
+	if got, errMsg := handler.resolveAccessProgramModel("auto(high)", []byte(`{"access_programs":{"cyber":"daybreak_blue"}}`)); errMsg != nil || got != "gpt-access-auto-test-daybreak-blue(high)" {
+		t.Fatalf("auto with daybreak_blue = %q, %+v; want the variant", got, errMsg)
+	}
+	if got, errMsg := handler.resolveAccessProgramModel("auto", []byte(`{"input":"hi"}`)); errMsg != nil || got != "auto" {
+		t.Fatalf("auto without a program = %q, %+v; want unchanged", got, errMsg)
+	}
+	if got, errModel := reg.GetFirstAvailableModel(""); errModel != nil || got != "gpt-access-auto-test" {
+		t.Fatalf("GetFirstAvailableModel = %q, %v; want the base model", got, errModel)
+	}
+}
+
 // A compact request is resolved like any other, so a program no credential
 // offers is rejected before credential selection.
 func TestExecuteCompactRejectsAccessProgramWithoutVariant(t *testing.T) {
