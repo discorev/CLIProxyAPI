@@ -461,3 +461,29 @@ func TestCatalogCatchUpReplacesDiscoveredModel(t *testing.T) {
 		t.Fatalf("curated entry did not replace the discovered one (count %d): %+v", count, got)
 	}
 }
+
+func TestUpstreamModelCopyPrivateDirAndSizeLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache", upstreamModelsFileName)
+	if errWrite := writePersistedUpstreamModels(path, map[string][]coreauth.UpstreamModel{"k": {{ID: "m"}}}); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	if info, errStat := os.Stat(filepath.Dir(path)); errStat != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("cache directory not created private: %v %v", info, errStat)
+	}
+	if persisted, errLoad := loadPersistedUpstreamModels(path); errLoad != nil || len(persisted["k"]) != 1 {
+		t.Fatalf("round trip = %v, %v", persisted, errLoad)
+	}
+
+	if errTruncate := os.Truncate(path, upstreamModelsMaxBytes+1); errTruncate != nil {
+		t.Fatal(errTruncate)
+	}
+	if persisted, errLoad := loadPersistedUpstreamModels(path); errLoad == nil || persisted != nil {
+		t.Fatalf("oversized copy loaded: %v, %v", persisted, errLoad)
+	}
+	if persisted, errLoad := loadPersistedUpstreamModels(filepath.Dir(path)); errLoad == nil || persisted != nil {
+		t.Fatalf("directory loaded as the copy: %v, %v", persisted, errLoad)
+	}
+	if persisted, errLoad := loadPersistedUpstreamModels(""); errLoad != nil || persisted != nil {
+		t.Fatalf("disabled copy = %v, %v", persisted, errLoad)
+	}
+}

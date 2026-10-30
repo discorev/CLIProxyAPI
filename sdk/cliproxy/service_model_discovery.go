@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -33,10 +34,21 @@ const (
 // claudeEffortLevels orders Claude effort levels from lowest to highest.
 var claudeEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
 
-const upstreamModelsFileName = "cliproxyapi-upstream-models.json"
+const (
+	upstreamModelsDirName  = "cliproxyapi"
+	upstreamModelsFileName = "upstream-models.json"
+	// upstreamModelsMaxBytes caps the copy read at startup.
+	upstreamModelsMaxBytes = 16 << 20
+)
 
+// defaultUpstreamModelsPath returns the copy's path in the user's cache
+// directory, which other users cannot write, or "" to disable the copy.
 func defaultUpstreamModelsPath() string {
-	return filepath.Join(os.TempDir(), upstreamModelsFileName)
+	dir, errDir := os.UserCacheDir()
+	if errDir != nil {
+		return ""
+	}
+	return filepath.Join(dir, upstreamModelsDirName, upstreamModelsFileName)
 }
 
 func modelDiscoveryProvider(provider string) bool {
@@ -417,14 +429,37 @@ func (s *Service) reconcileDiscoveredModels(auth *coreauth.Auth, previous, curre
 }
 
 // loadPersistedUpstreamModels reads the best-effort upstream model copy keyed
-// by hashed credential identity.
+// by hashed credential identity. Only regular files up to
+// upstreamModelsMaxBytes are read, so a FIFO or device cannot block startup.
 func loadPersistedUpstreamModels(path string) (map[string][]coreauth.UpstreamModel, error) {
-	data, errRead := os.ReadFile(path)
-	if errRead != nil {
-		if os.IsNotExist(errRead) {
+	if path == "" {
+		return nil, nil
+	}
+	info, errStat := os.Lstat(path)
+	if errStat != nil {
+		if os.IsNotExist(errStat) {
 			return nil, nil
 		}
+		return nil, errStat
+	}
+	if !info.Mode().IsRegular() || info.Size() > upstreamModelsMaxBytes {
+		return nil, fmt.Errorf("%s is not a regular file of at most %d bytes", path, upstreamModelsMaxBytes)
+	}
+	file, errOpen := os.Open(path)
+	if errOpen != nil {
+		return nil, errOpen
+	}
+	defer func() {
+		if errClose := file.Close(); errClose != nil {
+			log.Debugf("upstream model copy not closed: %v", errClose)
+		}
+	}()
+	data, errRead := io.ReadAll(io.LimitReader(file, upstreamModelsMaxBytes+1))
+	if errRead != nil {
 		return nil, errRead
+	}
+	if len(data) > upstreamModelsMaxBytes {
+		return nil, fmt.Errorf("%s is larger than %d bytes", path, upstreamModelsMaxBytes)
 	}
 	var persisted map[string][]coreauth.UpstreamModel
 	if errDecode := json.Unmarshal(data, &persisted); errDecode != nil {
@@ -437,6 +472,9 @@ func writePersistedUpstreamModels(path string, persisted map[string][]coreauth.U
 	data, errMarshal := json.Marshal(persisted)
 	if errMarshal != nil {
 		return errMarshal
+	}
+	if errMkdir := os.MkdirAll(filepath.Dir(path), 0o700); errMkdir != nil {
+		return errMkdir
 	}
 	file, errCreate := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
 	if errCreate != nil {
