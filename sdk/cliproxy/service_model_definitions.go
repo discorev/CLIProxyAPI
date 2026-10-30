@@ -38,9 +38,10 @@ func applyModelDefinitionsForAuth(cfg *config.Config, auth *coreauth.Auth, provi
 		return models
 	}
 	catalog := discoveryCatalogSection(auth)
-	// Requests for an ID run the model the per-auth alias table maps it to, so
-	// routes are built from that table rather than from each definition.
-	aliases := coreauth.OAuthModelAliasesFromAttributes(auth.Attributes)
+	// Requests for an ID run the model the auth's aliases map it to (per-auth
+	// entries first, then the channel's), so routes are built from those
+	// aliases rather than from each definition.
+	aliases := oauthModelAliasesForAuth(cfg, channel, auth.Attributes)
 	for _, setting := range settings {
 		if !hasModelIDFold(restricted, setting.Name) && setting.Alias == "" && setting.DefinesModel() {
 			models = appendDefinedModel(provider, catalog, excluded, models, setting.Name, "")
@@ -152,7 +153,7 @@ func routeExcluded(excluded []string, id, upstreamID string) bool {
 	return len(applyExcludedModels([]*ModelInfo{{ID: id}, {ID: upstreamID}}, excluded)) < 2
 }
 
-// aliasTarget returns the model a per-auth alias runs for id, or "".
+// aliasTarget returns the model an alias runs for id, or "".
 func aliasTarget(aliases []config.OAuthModelAlias, id string) string {
 	for _, alias := range aliases {
 		if strings.EqualFold(alias.Alias, id) {

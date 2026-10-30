@@ -433,3 +433,17 @@ func TestDefinedRouteFollowsAuthAliasTable(t *testing.T) {
 		t.Fatalf("local listed as %+v, want a route to %s", local, aliased.ID)
 	}
 }
+
+func TestDefinedIDWithExcludedChannelAliasTargetIsDropped(t *testing.T) {
+	auth := restrictedTestAuth("claude", "claude-definition-channel-alias-test")
+	service := discoveryTestService(t, auth)
+	upstream := registry.GetClaudeModels()[0].ID
+	service.cfg.OAuthModelAlias = map[string][]config.OAuthModelAlias{"claude": {{Name: upstream, Alias: "local"}}}
+	auth.Attributes["excluded_models"] = upstream
+	// Without a per-auth alias, requests for local run the channel alias target.
+	defineModels(auth, `[{"id":"local"}]`)
+	service.registerModelsForAuth(context.Background(), auth)
+	if registered := GlobalModelRegistry().GetModelsForClient(auth.ID); containsModelID(registered, "local") || containsModelID(registered, upstream) {
+		t.Fatalf("defined ID routed to an excluded channel alias target: %v", modelIDs(registered))
+	}
+}
