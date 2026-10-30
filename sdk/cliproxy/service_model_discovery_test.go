@@ -13,8 +13,11 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/claude"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/tidwall/gjson"
 )
 
 func loadUpstreamFixture(t *testing.T, name, idKey string) []coreauth.UpstreamModel {
@@ -130,6 +133,35 @@ func TestDiscoverClaudeModelThinkingWithoutPredecessorThinking(t *testing.T) {
 	}
 	if catalog[0].Thinking != nil {
 		t.Fatalf("synthesis mutated the catalog: %+v", catalog[0].Thinking)
+	}
+}
+
+func TestDiscoverClaudeAdaptiveOnlyModelSkipsManualThinking(t *testing.T) {
+	upstream := []coreauth.UpstreamModel{
+		{ID: "claude-a-1", Raw: json.RawMessage(`{"id":"claude-a-1","line":"a","capabilities":{"effort":{"low":{"supported":true},"high":{"supported":true}},` +
+			`"thinking":{"supported":true,"types":{"adaptive":{"supported":true},"enabled":{"supported":false}}}}}`)},
+		{ID: "claude-b-1", Raw: json.RawMessage(`{"id":"claude-b-1","line":"b","capabilities":{"effort":{"low":{"supported":true},"high":{"supported":true}},` +
+			`"thinking":{"supported":true,"types":{"adaptive":{"supported":true},"enabled":{"supported":true}}}}}`)},
+	}
+	models := discoverForTest("claude", nil, upstream)
+	if len(models) != 2 {
+		t.Fatalf("discovered = %v", modelIDs(models))
+	}
+	if want := (&registry.ThinkingSupport{DynamicAllowed: true, Levels: []string{"low", "high"}}); !reflect.DeepEqual(models[0].Thinking, want) {
+		t.Fatalf("adaptive-only thinking = %+v, want %+v", models[0].Thinking, want)
+	}
+	if models[1].Thinking == nil || models[1].Thinking.Max != discoveredClaudeThinkingMax || models[1].Thinking.DynamicAllowed {
+		t.Fatalf("manual-capable model lost its budget range: %+v", models[1].Thinking)
+	}
+
+	for _, model := range []string{"claude-a-1(auto)", "claude-a-1(8192)"} {
+		body, errApply := thinking.ApplyThinkingWithModelInfo([]byte(`{"model":"claude-a-1"}`), nil, model, "claude", "claude", "claude", models[0])
+		if errApply != nil {
+			t.Fatalf("%s: %v", model, errApply)
+		}
+		if got := gjson.GetBytes(body, "thinking.type").String(); got != "adaptive" || gjson.GetBytes(body, "thinking.budget_tokens").Exists() {
+			t.Fatalf("%s sent manual thinking to an adaptive-only model: %s", model, body)
+		}
 	}
 }
 
