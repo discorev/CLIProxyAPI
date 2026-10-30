@@ -56,6 +56,10 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	if routeDecision.ExecutorPluginID != "" {
 		return h.executeWithPluginExecutor(ctx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
 	}
+	modelName, errProgram := h.resolveAccessProgramRoute(modelName, originalRequestedModel, &routeDecision, rawJSON)
+	if errProgram != nil {
+		return nil, nil, errProgram
+	}
 	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
 	if errMsg != nil {
 		return nil, nil, errMsg
