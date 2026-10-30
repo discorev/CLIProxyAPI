@@ -43,7 +43,8 @@ func (h *BaseAPIHandler) resolveAccessProgramRoute(modelName, originalRequestedM
 // credential registers a genuine variant, or when an ordinary model (such as a
 // user-defined alias) shares the variant's ID and could be selected for it. A
 // requested variant gets the same collision check whatever program the body
-// asks for. A standard or absent program passes through unchanged.
+// asks for, and keeps its own program. A standard or absent program passes
+// through unchanged.
 func (h *BaseAPIHandler) resolveAccessProgramModel(modelName string, rawJSON []byte) (string, *interfaces.ErrorMessage) {
 	if h != nil && h.AuthManager != nil && h.AuthManager.HomeEnabled() {
 		return modelName, nil

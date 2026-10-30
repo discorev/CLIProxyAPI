@@ -209,6 +209,15 @@ func TestResolveAccessProgramModelResolvesAuto(t *testing.T) {
 	if got, errModel := reg.GetFirstAvailableModel(""); errModel != nil || got != "gpt-access-auto-test" {
 		t.Fatalf("GetFirstAvailableModel = %q, %v; want the base model", got, errModel)
 	}
+	// An ordinary model sharing the variant's ID, registered last, does not
+	// make the variant selectable.
+	reg.RegisterClient("test-access-program-auto-alias", "codex", []*registry.ModelInfo{
+		{ID: "gpt-access-auto-test-daybreak-blue", MetadataModelID: "gpt-access-auto-test", Created: created},
+	})
+	t.Cleanup(func() { reg.UnregisterClient("test-access-program-auto-alias") })
+	if got, errModel := reg.GetFirstAvailableModel(""); errModel != nil || got != "gpt-access-auto-test" {
+		t.Fatalf("GetFirstAvailableModel with a shared variant ID = %q, %v; want the base model", got, errModel)
+	}
 }
 
 // A compact request is resolved like any other, so a program no credential

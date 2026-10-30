@@ -1867,7 +1867,7 @@ func (r *ModelRegistry) GetFirstAvailableModel(handlerType string) (string, erro
 	// skipped, so "auto" never selects a non-standard access program.
 	for _, model := range models {
 		if modelID, ok := model["id"].(string); ok {
-			if info := r.GetModelInfo(modelID, ""); info != nil && info.AccessProgram != "" {
+			if genuine, _ := r.AccessProgramVariantClients(modelID, ""); genuine > 0 {
 				continue
 			}
 			if count := r.GetModelCount(modelID); count > 0 {

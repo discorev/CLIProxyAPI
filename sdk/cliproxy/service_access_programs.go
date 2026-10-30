@@ -97,7 +97,7 @@ func (s *Service) appendAccessProgramVariantsLocked(auth *coreauth.Auth, exclude
 	for _, variant := range variants {
 		base := findModelByID(models, variant.base)
 		id := variant.id()
-		if base == nil || (base.MetadataModelID != "" && !strings.EqualFold(base.MetadataModelID, base.ID)) {
+		if base == nil || (base.MetadataModelID != "" && !strings.EqualFold(base.MetadataModelID, variant.base)) {
 			continue
 		}
 		if findModelByID(out, id) != nil || len(applyExcludedModels([]*ModelInfo{{ID: id}}, excluded)) == 0 {
