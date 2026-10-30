@@ -294,7 +294,7 @@ func TestRestrictedModelsOptInOnlyThroughAuthFileIDs(t *testing.T) {
 	}
 }
 
-func TestSettingsCannotDefineRestrictedModelByCaseVariant(t *testing.T) {
+func TestSettingsCannotDefineRestrictedModelOrRoute(t *testing.T) {
 	auth := restrictedTestAuth("claude", "claude-definition-case-test")
 	service := discoveryTestService(t, auth)
 	restricted := findModel(registry.GetClaudeModels(), "claude-opus-4-6")
@@ -302,12 +302,17 @@ func TestSettingsCannotDefineRestrictedModelByCaseVariant(t *testing.T) {
 		t.Skip("claude-opus-4-6 not in the Claude catalog")
 	}
 	service.restrictedAccess.restrictedIDs = func(string) map[string]struct{} { return map[string]struct{}{restricted.ID: {}} }
-	service.cfg.OAuthSettings = map[string][]config.OAuthModelSetting{"claude": {{Name: " " + strings.ToUpper(restricted.ID), DisplayName: "Settings R"}}}
+	service.cfg.OAuthSettings = map[string][]config.OAuthModelSetting{"claude": {
+		{Name: " " + strings.ToUpper(restricted.ID), DisplayName: "Settings R"},
+		{Name: "settings-route", DisplayName: "Settings route"},
+	}}
+	// A channel alias makes settings-route run the restricted model.
+	service.cfg.OAuthModelAlias = map[string][]config.OAuthModelAlias{"claude": {{Name: restricted.ID + "(high)", Alias: "settings-route"}}}
 
 	service.registerModelsForAuth(context.Background(), auth)
 	for _, model := range GlobalModelRegistry().GetModelsForClient(auth.ID) {
-		if strings.EqualFold(strings.TrimSpace(model.ID), restricted.ID) {
-			t.Fatalf("case-variant settings entry defined restricted %s without a grant", model.ID)
+		if strings.EqualFold(strings.TrimSpace(model.ID), restricted.ID) || model.ID == "settings-route" {
+			t.Fatalf("settings entry defined restricted %s (or a route to it) without a grant: %s", restricted.ID, model.ID)
 		}
 	}
 }

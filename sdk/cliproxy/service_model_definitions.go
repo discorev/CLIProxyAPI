@@ -21,9 +21,9 @@ import (
 // applyModelDefinitionsForAuth adds the models that settings or the auth file
 // define but the credential does not resolve, then applies settings and auth
 // file overrides in that order. Excluded models are never defined, and
-// settings never define a restricted model: they apply to every credential of
-// the channel, including those without access. restricted holds the
-// provider's restricted catalog IDs.
+// settings never define a restricted model or a route to one: they apply to
+// every credential of the channel, including those without access. restricted
+// holds the provider's restricted catalog IDs.
 func applyModelDefinitionsForAuth(cfg *config.Config, auth *coreauth.Auth, provider string, excluded []string, restricted map[string]struct{}, models []*ModelInfo) []*ModelInfo {
 	if auth == nil {
 		return models
@@ -44,8 +44,9 @@ func applyModelDefinitionsForAuth(cfg *config.Config, auth *coreauth.Auth, provi
 	// aliases rather than from each definition.
 	aliases := oauthModelAliasesForAuth(cfg, channel, auth.Attributes)
 	for _, setting := range settings {
-		if !hasModelIDFold(restricted, setting.Name) && setting.Alias == "" && setting.DefinesModel() {
-			models = appendDefinedModel(provider, catalog, excluded, models, setting.Name, aliasTarget(aliases, setting.Name))
+		target := aliasTarget(aliases, setting.Name)
+		if !hasModelIDFold(restricted, setting.Name) && !hasModelIDFold(restricted, target) && setting.Alias == "" && setting.DefinesModel() {
+			models = appendDefinedModel(provider, catalog, excluded, models, setting.Name, target)
 		}
 	}
 	for _, definition := range definitions {
