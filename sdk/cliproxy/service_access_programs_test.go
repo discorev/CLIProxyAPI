@@ -52,9 +52,15 @@ func TestAccessProgramVariantsFromUpstreamList(t *testing.T) {
 	if got := accessProgramVariantsForTest(service, auth, nil, models[1:]); len(got) != 2 {
 		t.Fatalf("variant registered without its base: %v", modelIDs(got))
 	}
+	// The grant belongs to the upstream model sent, so a base a definition
+	// routes to another upstream model gets no variant.
 	route := []*ModelInfo{{ID: "gpt-fixture-a", MetadataModelID: "gpt-fixture-a-upstream"}}
-	if got := accessProgramVariantsForTest(service, auth, nil, route); len(got) != 2 || got[1].MetadataModelID != "gpt-fixture-a-upstream" {
-		t.Fatalf("variant of a route does not target the base's upstream model: %+v", got)
+	if got := accessProgramVariantsForTest(service, auth, nil, route); len(got) != 1 {
+		t.Fatalf("variant registered for a base routed to another upstream model: %v", modelIDs(got))
+	}
+	sameUpstream := []*ModelInfo{{ID: "gpt-fixture-a", MetadataModelID: "gpt-fixture-a"}}
+	if got := accessProgramVariantsForTest(service, auth, nil, sameUpstream); len(got) != 2 || got[1].MetadataModelID != "gpt-fixture-a" {
+		t.Fatalf("variant of a base routed to itself = %v", modelIDs(got))
 	}
 	existing := []*ModelInfo{base, {ID: "gpt-fixture-a-daybreak-blue", DisplayName: "user defined"}}
 	if got := accessProgramVariantsForTest(service, auth, nil, existing); len(got) != 2 || got[1].AccessProgram != "" {

@@ -82,8 +82,9 @@ func accessProgramVariantsEqual(a, b []coreauth.UpstreamModel) bool {
 // appendAccessProgramVariantsLocked adds a Daybreak variant for each program
 // the credential's upstream list grants a resolved model. The variant copies
 // the base's final entry and routes to its upstream model. Bases the
-// credential does not resolve, excluded variant IDs and IDs already resolved
-// are skipped. Callers hold restrictedAccess.mu.
+// credential does not resolve, bases a definition routes to another upstream
+// model (the grant belongs to the model sent), excluded variant IDs and IDs
+// already resolved are skipped. Callers hold restrictedAccess.mu.
 func (s *Service) appendAccessProgramVariantsLocked(auth *coreauth.Auth, excluded []string, models []*ModelInfo) []*ModelInfo {
 	if !s.modelDiscoveryEnabled(auth) || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
 		return models
@@ -96,14 +97,15 @@ func (s *Service) appendAccessProgramVariantsLocked(auth *coreauth.Auth, exclude
 	for _, variant := range variants {
 		base := findModelByID(models, variant.base)
 		id := variant.id()
-		if base == nil || findModelByID(out, id) != nil || len(applyExcludedModels([]*ModelInfo{{ID: id}}, excluded)) == 0 {
+		if base == nil || (base.MetadataModelID != "" && !strings.EqualFold(base.MetadataModelID, base.ID)) {
+			continue
+		}
+		if findModelByID(out, id) != nil || len(applyExcludedModels([]*ModelInfo{{ID: id}}, excluded)) == 0 {
 			continue
 		}
 		info := cloneModelInfoForCatalogRoute(base)
 		info.ID = id
-		if info.MetadataModelID == "" {
-			info.MetadataModelID = base.ID
-		}
+		info.MetadataModelID = variant.base
 		name := base.DisplayName
 		if name == "" {
 			name = base.ID
