@@ -19,7 +19,8 @@ const restrictedModelRefreshInterval = 15 * time.Minute
 type restrictedModelAccessEntry struct {
 	identity string
 	listed   map[string]struct{}
-	applied  map[string]struct{} // Grants from the last reconciliation registration.
+	upstream []coreauth.UpstreamModel // Objects from the last successful fetch; nil until one succeeds.
+	applied  map[string]struct{}      // Grants from the last reconciliation registration.
 	fetching bool
 	done     chan struct{}
 	nextAt   time.Time
@@ -32,6 +33,10 @@ type restrictedModelAccessCache struct {
 	started       bool
 	now           func() time.Time                 // Injectable clock for refresh tests.
 	restrictedIDs func(string) map[string]struct{} // Injectable catalog view for tests.
+	// persisted seeds model discovery across restarts, keyed by hashed identity.
+	persisted   map[string][]coreauth.UpstreamModel
+	persistPath string // Empty disables the best-effort copy.
+	persistMu   sync.Mutex
 }
 
 func (c *restrictedModelAccessCache) clock() time.Time {
@@ -118,14 +123,7 @@ func (s *Service) filterRestrictedModelsLocked(auth *coreauth.Auth, models []*Mo
 		return models
 	}
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
-	var restricted map[string]struct{}
-	if restrictedCatalogProvider(provider) {
-		restrictedIDs := s.restrictedAccess.restrictedIDs
-		if restrictedIDs == nil {
-			restrictedIDs = restrictedCatalogIDs
-		}
-		restricted = restrictedIDs(provider)
-	}
+	restricted := s.restrictedCatalogIDsLocked(provider)
 	explicit := s.explicitRestrictedModelIDs(auth)
 	var listed map[string]struct{}
 	if identity := restrictedModelIdentity(auth); identity != "" {
@@ -161,9 +159,23 @@ func (s *Service) filterRestrictedModelsLocked(auth *coreauth.Auth, models []*Mo
 	return filtered
 }
 
+// restrictedCatalogIDsLocked returns the provider's restricted catalog IDs.
+// Callers hold restrictedAccess.mu.
+func (s *Service) restrictedCatalogIDsLocked(provider string) map[string]struct{} {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if !restrictedCatalogProvider(provider) {
+		return nil
+	}
+	restrictedIDs := s.restrictedAccess.restrictedIDs
+	if restrictedIDs == nil {
+		restrictedIDs = restrictedCatalogIDs
+	}
+	return restrictedIDs(provider)
+}
+
 func (s *Service) explicitRestrictedModelIDs(auth *coreauth.Auth) map[string]struct{} {
 	if auth.AuthKind() != coreauth.AuthKindAPIKey {
-		return nil
+		return definedModelIDs(auth)
 	}
 	var names []string
 	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
@@ -282,14 +294,25 @@ func restrictedCatalogIDs(provider string) map[string]struct{} {
 	return ids
 }
 
-// Read actual registration rather than a cached registration epoch.
+// Read actual registration rather than a cached registration epoch. Routes of
+// auth-file upstream_id entries are registered without a grant, so they do not
+// count as registering their upstream model.
 func registeredRestrictedIDs(auth *coreauth.Auth, restricted map[string]struct{}) map[string]struct{} {
 	registered := make(map[string]struct{})
+	routes := definedRouteIDs(auth)
+	prefix := strings.TrimSpace(auth.Prefix)
 	for _, model := range GlobalModelRegistry().GetModelsForClient(auth.ID) {
+		local := model.ID
+		if prefix != "" {
+			local = strings.TrimPrefix(local, prefix+"/")
+		}
+		if _, ok := routes[strings.ToLower(local)]; ok {
+			continue
+		}
 		if id := restrictedModelID(model, restricted); id != "" {
 			registered[id] = struct{}{}
 		}
-		if prefix := strings.TrimSpace(auth.Prefix); prefix != "" {
+		if prefix != "" {
 			if id, ok := strings.CutPrefix(model.ID, prefix+"/"); ok {
 				if _, restrictedID := restricted[id]; restrictedID {
 					registered[id] = struct{}{}
@@ -314,11 +337,13 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 	}()
 	// Listers may refresh credentials in place (Meta mints its API key and learns
 	// the account email), which would change the identity checked below.
-	ids, errFetch := lister.ListUpstreamModels(ctx, auth.Clone())
-	listed := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		if id = strings.TrimSpace(id); id != "" {
-			listed[id] = struct{}{}
+	models, errFetch := lister.ListUpstreamModels(ctx, auth.Clone())
+	listed := make(map[string]struct{}, len(models))
+	upstream := make([]coreauth.UpstreamModel, 0, len(models))
+	for _, model := range models {
+		if model.ID = strings.TrimSpace(model.ID); model.ID != "" {
+			listed[model.ID] = struct{}{}
+			upstream = append(upstream, model)
 		}
 	}
 	cache := &s.restrictedAccess
@@ -334,14 +359,27 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 		}
 		return
 	}
+	previous := s.upstreamModelsLocked(auth)
 	entry.listed = listed
+	entry.upstream = upstream
 	cache.mu.Unlock()
+	discoveryChanged := s.reconcileDiscoveredModels(auth, previous, upstream)
+	if s.modelDiscoveryEnabled(auth) && !upstreamModelsEqual(previous, upstream) {
+		s.persistUpstreamModels(restrictedModelIdentity(auth), upstream)
+	}
 
 	restrictedIDs := cache.restrictedIDs
 	if restrictedIDs == nil {
 		restrictedIDs = restrictedCatalogIDs
 	}
 	restricted := restrictedIDs(auth.Provider)
+	// Defined models are registered without a grant, so they never need a refresh.
+	if defined := s.explicitRestrictedModelIDs(auth); len(defined) > 0 {
+		restricted = maps.Clone(restricted)
+		for id := range defined {
+			delete(restricted, id)
+		}
+	}
 	granted := make(map[string]struct{})
 	for id := range restricted {
 		if _, ok := listed[id]; ok {
@@ -363,7 +401,10 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 	}
 	// A matching registry is already reconciled, even when no registration ran.
 	registryMatches := maps.Equal(registered, granted)
-	if registryMatches || ((denied || !maps.Equal(applied, granted)) && s.refreshModelRegistrationForAuth(auth)) {
+	// A changed discovered set re-registers even when grants are reconciled.
+	grantRefresh := !registryMatches && (denied || !maps.Equal(applied, granted))
+	refreshed := (grantRefresh || discoveryChanged) && s.refreshModelRegistrationForAuth(auth)
+	if registryMatches || (grantRefresh && refreshed) {
 		cache.mu.Lock()
 		if cache.entries[auth.ID] == entry && maps.Equal(entry.listed, listed) {
 			entry.applied = granted
@@ -381,7 +422,11 @@ func (s *Service) startRestrictedModelRefresh(ctx context.Context) {
 	}
 	cache.started = true
 	cache.ctx = ctx
+	seed := cache.persistPath == ""
 	cache.mu.Unlock()
+	if seed {
+		s.seedUpstreamModels(defaultUpstreamModelsPath())
+	}
 	go func() {
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()

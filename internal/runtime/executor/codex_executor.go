@@ -30,7 +30,7 @@ func (e *CodexExecutor) FetchUsage(ctx context.Context, auth *cliproxyauth.Auth)
 	return helps.FetchCodexUsage(ctx, auth, e.chatGPTBackendHttpRequest)
 }
 
-func (e *CodexExecutor) ListUpstreamModels(ctx context.Context, auth *cliproxyauth.Auth) ([]string, error) {
+func (e *CodexExecutor) ListUpstreamModels(ctx context.Context, auth *cliproxyauth.Auth) ([]cliproxyauth.UpstreamModel, error) {
 	return helps.FetchCodexModelList(ctx, auth, e.chatGPTBackendHttpRequest)
 }
 

@@ -14,8 +14,23 @@ import (
 
 const codexModelListClientVersion = "99.0.0"
 
+// upstreamModels keeps each listed object with its trimmed ID, dropping entries without one.
+func upstreamModels(objects []json.RawMessage, idKey string) []cliproxyauth.UpstreamModel {
+	models := make([]cliproxyauth.UpstreamModel, 0, len(objects))
+	for _, raw := range objects {
+		var fields map[string]any
+		if json.Unmarshal(raw, &fields) != nil {
+			continue
+		}
+		if id, _ := fields[idKey].(string); strings.TrimSpace(id) != "" {
+			models = append(models, cliproxyauth.UpstreamModel{ID: strings.TrimSpace(id), Raw: raw})
+		}
+	}
+	return models
+}
+
 // FetchMetaModelList lists every model visible to this OAuth account, including hidden models.
-func FetchMetaModelList(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest) ([]string, error) {
+func FetchMetaModelList(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest) ([]cliproxyauth.UpstreamModel, error) {
 	headers := make(http.Header)
 	headers.Set("Accept", "application/json")
 	body, errFetch := fetchUsageJSON(ctx, auth, request, "https://api.meta.ai/muse-code/models", headers)
@@ -23,27 +38,19 @@ func FetchMetaModelList(ctx context.Context, auth *cliproxyauth.Auth, request Us
 		return nil, fmt.Errorf("meta model list: %w", errFetch)
 	}
 	var result struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
+		Data []json.RawMessage `json:"data"`
 	}
 	if errDecode := json.Unmarshal(body, &result); errDecode != nil || result.Data == nil {
 		return nil, errors.New("meta model list: invalid data")
 	}
-	models := make([]string, 0, len(result.Data))
-	for _, model := range result.Data {
-		if id := strings.TrimSpace(model.ID); id != "" {
-			models = append(models, id)
-		}
-	}
-	return models, nil
+	return upstreamModels(result.Data, "id"), nil
 }
 
 // FetchClaudeModelList lists every model visible to this OAuth credential.
-func FetchClaudeModelList(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest) ([]string, error) {
+func FetchClaudeModelList(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest) ([]cliproxyauth.UpstreamModel, error) {
 	headers := claudeUsageHeaders()
 	headers.Set("Anthropic-Version", "2023-06-01")
-	models := make([]string, 0)
+	models := make([]cliproxyauth.UpstreamModel, 0)
 	after := ""
 	for {
 		endpoint := "https://api.anthropic.com/v1/models?limit=1000"
@@ -55,31 +62,26 @@ func FetchClaudeModelList(ctx context.Context, auth *cliproxyauth.Auth, request 
 			return nil, fmt.Errorf("claude model list: %w", errFetch)
 		}
 		var page struct {
-			Data []struct {
-				ID string `json:"id"`
-			} `json:"data"`
-			HasMore bool `json:"has_more"`
+			Data    []json.RawMessage `json:"data"`
+			HasMore bool              `json:"has_more"`
 		}
 		if errDecode := json.Unmarshal(body, &page); errDecode != nil || page.Data == nil {
 			return nil, errors.New("claude model list: invalid data")
 		}
-		for _, model := range page.Data {
-			if id := strings.TrimSpace(model.ID); id != "" {
-				models = append(models, id)
-			}
-		}
+		pageModels := upstreamModels(page.Data, "id")
+		models = append(models, pageModels...)
 		if !page.HasMore {
 			return models, nil
 		}
-		if len(page.Data) == 0 || strings.TrimSpace(page.Data[len(page.Data)-1].ID) == after {
+		if len(pageModels) == 0 || pageModels[len(pageModels)-1].ID == after {
 			return nil, errors.New("claude model list: missing pagination cursor")
 		}
-		after = strings.TrimSpace(page.Data[len(page.Data)-1].ID)
+		after = pageModels[len(pageModels)-1].ID
 	}
 }
 
 // FetchCodexModelList lists every model visible to this OAuth account, including hidden models.
-func FetchCodexModelList(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest) ([]string, error) {
+func FetchCodexModelList(ctx context.Context, auth *cliproxyauth.Auth, request UsageHTTPRequest) ([]cliproxyauth.UpstreamModel, error) {
 	accountID, _ := auth.Metadata["account_id"].(string)
 	accountID = strings.TrimSpace(accountID)
 	if accountID == "" {
@@ -95,18 +97,10 @@ func FetchCodexModelList(ctx context.Context, auth *cliproxyauth.Auth, request U
 		return nil, fmt.Errorf("codex model list: %w", errFetch)
 	}
 	var result struct {
-		Models []struct {
-			Slug string `json:"slug"`
-		} `json:"models"`
+		Models []json.RawMessage `json:"models"`
 	}
 	if errDecode := json.Unmarshal(body, &result); errDecode != nil || result.Models == nil {
 		return nil, errors.New("codex model list: invalid models")
 	}
-	models := make([]string, 0, len(result.Models))
-	for _, model := range result.Models {
-		if slug := strings.TrimSpace(model.Slug); slug != "" {
-			models = append(models, slug)
-		}
-	}
-	return models, nil
+	return upstreamModels(result.Models, "slug"), nil
 }

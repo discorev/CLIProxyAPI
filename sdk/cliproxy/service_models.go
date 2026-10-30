@@ -67,6 +67,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		return
 	}
 	var models []*ModelInfo
+	var discoveryCatalog []*ModelInfo // Catalog section discovered models are compared against.
 	switch provider {
 	case constant.Gemini:
 		models = registry.GetGeminiModels()
@@ -124,6 +125,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = applyExcludedModels(models, excluded)
 	case "claude":
 		models = registry.GetClaudeModels()
+		discoveryCatalog = models
 		if entry := s.resolveConfigClaudeKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildClaudeConfigModels(entry)
@@ -143,22 +145,8 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			break
 		}
 
-		codexPlanType := ""
-		if a.Attributes != nil {
-			codexPlanType = strings.TrimSpace(a.Attributes["plan_type"])
-		}
-		switch strings.ToLower(codexPlanType) {
-		case "pro":
-			models = registry.GetCodexProModels()
-		case "plus":
-			models = registry.GetCodexPlusModels()
-		case "team", "business", "go":
-			models = registry.GetCodexTeamModels()
-		case "free":
-			models = registry.GetCodexFreeModels()
-		default:
-			models = registry.GetCodexProModels()
-		}
+		models = codexCatalogModelsForPlan(a.Attributes["plan_type"])
+		discoveryCatalog = models
 		models = applyExcludedModels(models, excluded)
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		models = registry.GetKimiModels()
@@ -305,14 +293,16 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	}
 	s.restrictedAccess.mu.RLock()
 	defer s.restrictedAccess.mu.RUnlock()
+	// Eligibility is checked per credential: an empty catalog section still discovers.
+	models = append(models, applyExcludedModels(s.discoveredModelsLocked(a, discoveryCatalog), excluded)...)
 	models = s.filterRestrictedModelsLocked(a, models)
 	models = applyOAuthModelAliasForAuth(s.cfg, provider, authKind, a.Attributes, models)
 	if ctx.Err() != nil {
 		return
 	}
 	models = appendUniqueModels(models, s.filterRestrictedModelsLocked(a, pluginModels))
+	models = applyModelDefinitionsForAuth(s.cfg, a, provider, excluded, s.restrictedCatalogIDsLocked(a.Provider), models)
 	if len(models) > 0 {
-		models = applyOAuthSettingsForAuth(s.cfg, provider, authKind, models)
 		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		if strings.EqualFold(strings.TrimSpace(a.Provider), "antigravity") {
 			s.asyncProbeAntigravityCapabilities(ctx, a, key)
@@ -1186,14 +1176,34 @@ func applyOAuthSettingEntries(settings []config.OAuthModelSetting, models []*Mod
 			continue
 		}
 		setting := config.ResolveOAuthModelSetting(settings, model.ID, model.MetadataModelID, model.Name)
-		if setting != nil && setting.MaxContextLength > 0 {
-			clone := *model
-			clone.ContextLength = setting.MaxContextLength
-			clone.MaxContextLength = setting.MaxContextLength
-			out = append(out, &clone)
-		} else {
+		if setting == nil || (setting.MaxContextLength <= 0 && !setting.DefinesModel()) {
 			out = append(out, model)
+			continue
 		}
+		clone := *model
+		// context-length sets the window in every list; max-context-length, when
+		// also set, overrides only what Codex clients are told.
+		if setting.ContextLength > 0 {
+			clone.ContextLength = setting.ContextLength
+			clone.MaxContextLength = setting.ContextLength
+		}
+		if setting.MaxContextLength > 0 {
+			clone.MaxContextLength = setting.MaxContextLength
+			if setting.ContextLength <= 0 {
+				clone.ContextLength = setting.MaxContextLength
+			}
+		}
+		if setting.DisplayName != "" {
+			clone.DisplayName = setting.DisplayName
+		}
+		if setting.MaxCompletionTokens > 0 {
+			clone.MaxCompletionTokens = setting.MaxCompletionTokens
+		}
+		if setting.Thinking != nil {
+			clone.Thinking = modelconfig.NormalizeThinkingSupport(setting.Thinking)
+			clone.ExplicitThinking = true
+		}
+		out = append(out, &clone)
 	}
 	return out
 }

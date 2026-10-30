@@ -660,7 +660,7 @@ func (s *Service) antigravityModelsForHintsWithConfig(auth *coreauth.Auth, hints
 	models = applyExcludedModels(models, excluded)
 	models = applyOAuthModelAliasForAuth(cfg, "antigravity", auth.AuthKind(), auth.Attributes, models)
 	models = s.appendPluginModels("antigravity", models)
-	models = applyOAuthSettingsForAuth(cfg, "antigravity", auth.AuthKind(), models)
+	models = applyModelDefinitionsForAuth(cfg, auth, "antigravity", excluded, nil, models)
 	return applyModelPrefixes(models, auth.Prefix, cfg.ForceModelPrefix)
 }
 

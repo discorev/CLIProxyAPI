@@ -231,3 +231,37 @@ func TestResolveOAuthModelSetting_Priority(t *testing.T) {
 		t.Fatalf("unknown model resolved to %+v, want nil", got)
 	}
 }
+
+func TestOAuthSettingsDefinitionFieldsDecoding(t *testing.T) {
+	const rawYAML = `
+config-version: 8
+oauth:
+  settings:
+    claude:
+      - name: "claude-fable-6"
+        display-name: " Claude Fable 6 "
+        context-length: 1000000
+        max-completion-tokens: 128000
+        thinking:
+          levels: ["low", "high"]
+      - name: "claude-opus-5"
+        max-context-length: 500000
+`
+	var cfg config.Config
+	if err := yaml.Unmarshal([]byte(rawYAML), &cfg); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	cfg.SanitizeOAuthSettings()
+	settings := cfg.OAuthSettings["claude"]
+	if len(settings) != 2 {
+		t.Fatalf("expected 2 claude settings, got %+v", settings)
+	}
+	fable := settings[0]
+	if fable.DisplayName != "Claude Fable 6" || fable.ContextLength != 1000000 || fable.MaxCompletionTokens != 128000 ||
+		fable.Thinking == nil || strings.Join(fable.Thinking.Levels, ",") != "low,high" || !fable.DefinesModel() {
+		t.Errorf("definition fields lost: %+v", fable)
+	}
+	if settings[1].DefinesModel() || settings[1].MaxContextLength != 500000 {
+		t.Errorf("legacy max-context-length entry changed meaning: %+v", settings[1])
+	}
+}

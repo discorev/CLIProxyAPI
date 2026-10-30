@@ -81,11 +81,24 @@ func TestOAuthModelListRequests(t *testing.T) {
 				wantCalls = 1
 			}
 			models, err := lister.ListUpstreamModels(ctx, auth)
-			if err != nil || !reflect.DeepEqual(models, want) || calls != wantCalls {
+			if err != nil || !reflect.DeepEqual(upstreamModelIDs(models), want) || calls != wantCalls {
 				t.Fatalf("models = %v, err = %v, calls = %d; want %v, %d", models, err, calls, want, wantCalls)
+			}
+			for _, model := range models {
+				if !strings.Contains(string(model.Raw), model.ID) {
+					t.Fatalf("model %q kept raw object %s", model.ID, model.Raw)
+				}
 			}
 		})
 	}
+}
+
+func upstreamModelIDs(models []cliproxyauth.UpstreamModel) []string {
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	return ids
 }
 
 func TestMetaModelListDoesNotMintAPIKey(t *testing.T) {
