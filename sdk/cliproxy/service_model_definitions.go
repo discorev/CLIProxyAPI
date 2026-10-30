@@ -38,13 +38,16 @@ func applyModelDefinitionsForAuth(cfg *config.Config, auth *coreauth.Auth, provi
 		return models
 	}
 	catalog := discoveryCatalogSection(auth)
+	// Requests for an ID run the model the per-auth alias table maps it to, so
+	// routes are built from that table rather than from each definition.
+	aliases := coreauth.OAuthModelAliasesFromAttributes(auth.Attributes)
 	for _, setting := range settings {
 		if !hasModelIDFold(restricted, setting.Name) && setting.Alias == "" && setting.DefinesModel() {
 			models = appendDefinedModel(provider, catalog, excluded, models, setting.Name, "")
 		}
 	}
 	for _, definition := range definitions {
-		models = appendDefinedModel(provider, catalog, excluded, models, definition.ID, definition.UpstreamID)
+		models = appendDefinedModel(provider, catalog, excluded, models, definition.ID, aliasTarget(aliases, definition.ID))
 	}
 	models = applyOAuthSettingEntries(settings, models)
 	if len(definitions) == 0 {
@@ -55,9 +58,9 @@ func applyModelDefinitionsForAuth(cfg *config.Config, auth *coreauth.Auth, provi
 		if model == nil {
 			continue
 		}
-		// Upstream_id aliases create routes after exclusions ran, so check the
-		// public ID of every defined route again.
-		if definedModelID(definitions, model.ID) && len(applyExcludedModels([]*ModelInfo{model}, excluded)) == 0 {
+		// Upstream_id aliases create routes after exclusions ran, and a listed ID
+		// can be redefined to run an excluded model, so check both again.
+		if definedModelID(definitions, model.ID) && routeExcluded(excluded, model.ID, aliasTarget(aliases, model.ID)) {
 			continue
 		}
 		// Overrides of the upstream model apply first, so the model's own ID wins.
@@ -119,11 +122,7 @@ func appendDefinedModel(provider string, catalog []*ModelInfo, excluded []string
 	if id == "" {
 		return models
 	}
-	upstream := upstreamID
-	if upstream == "" {
-		upstream = id
-	}
-	if len(applyExcludedModels([]*ModelInfo{{ID: id}, {ID: upstream}}, excluded)) < 2 {
+	if routeExcluded(excluded, id, upstreamID) {
 		return models
 	}
 	for i, model := range models {
@@ -143,6 +142,24 @@ func appendDefinedModel(provider string, catalog []*ModelInfo, excluded []string
 		}
 	}
 	return append(models, definedRoute(provider, catalog, models, id, upstreamID))
+}
+
+// routeExcluded reports whether id, or the upstream model it runs, is excluded.
+func routeExcluded(excluded []string, id, upstreamID string) bool {
+	if upstreamID == "" {
+		upstreamID = id
+	}
+	return len(applyExcludedModels([]*ModelInfo{{ID: id}, {ID: upstreamID}}, excluded)) < 2
+}
+
+// aliasTarget returns the model a per-auth alias runs for id, or "".
+func aliasTarget(aliases []config.OAuthModelAlias, id string) string {
+	for _, alias := range aliases {
+		if strings.EqualFold(alias.Alias, id) {
+			return alias.Name
+		}
+	}
+	return ""
 }
 
 // definedRoute builds the entry for a defined id. With an upstream_id, a model

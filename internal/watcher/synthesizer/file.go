@@ -104,7 +104,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			}
 			perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 			modelDefinitions := coreauth.ParseModelDefinitions(metadata["models"])
-			perAccountModelAliases := append(extractOAuthModelAliasesFromMetadata(metadata), coreauth.ModelDefinitionAliases(modelDefinitions)...)
+			perAccountModelAliases := accountModelAliases(metadata, modelDefinitions)
 			disabled, _ := metadata["disabled"].(bool)
 			for index, auth := range auths {
 				if auth == nil {
@@ -196,7 +196,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 	// Per-account model definitions; an upstream_id routes through a per-account alias.
 	modelDefinitions := coreauth.ParseModelDefinitions(metadata["models"])
-	perAccountModelAliases := append(extractOAuthModelAliasesFromMetadata(metadata), coreauth.ModelDefinitionAliases(modelDefinitions)...)
+	perAccountModelAliases := accountModelAliases(metadata, modelDefinitions)
 
 	a := &coreauth.Auth{
 		ID:       id,
@@ -362,4 +362,11 @@ func extractExcludedModelsFromMetadata(metadata map[string]any) []string {
 		}
 	}
 	return result
+}
+
+// accountModelAliases returns the per-account aliases with definition
+// upstream_id routes first: aliases keep the first entry per alias, so a
+// "models" entry wins over a model_aliases entry for the same ID.
+func accountModelAliases(metadata map[string]any, definitions []coreauth.ModelDefinition) []config.OAuthModelAlias {
+	return append(coreauth.ModelDefinitionAliases(definitions), extractOAuthModelAliasesFromMetadata(metadata)...)
 }

@@ -1112,7 +1112,7 @@ func TestSynthesizeAuthFile_CodexPlanType(t *testing.T) {
 func TestFileSynthesizer_Synthesize_ModelDefinitions(t *testing.T) {
 	tempDir := t.TempDir()
 	authData := `{"type":"codex","email":"codex@example.com",` +
-		`"model_aliases":[{"name":"gpt-6-sol","alias":"sol"}],` +
+		`"model_aliases":[{"name":"gpt-6-sol","alias":"sol"},{"name":"gpt-6-astra","alias":"my-sol"}],` +
 		`"models":[{"id":"my-sol","upstream_id":"gpt-6-sol","thinking":null},{"id":""},{"id":"gpt-secret","context_length":400000}]}`
 	if errWriteFile := os.WriteFile(filepath.Join(tempDir, "codex-auth.json"), []byte(authData), 0o644); errWriteFile != nil {
 		t.Fatalf("failed to write auth file: %v", errWriteFile)
@@ -1126,8 +1126,9 @@ func TestFileSynthesizer_Synthesize_ModelDefinitions(t *testing.T) {
 	if got, want := auths[0].Attributes["models"], `[{"id":"my-sol","thinking":null,"upstream_id":"gpt-6-sol"},{"context_length":400000,"id":"gpt-secret"}]`; got != want {
 		t.Fatalf("models attribute = %s, want %s", got, want)
 	}
-	// Explicit aliases come first; upstream_id adds a forked alias for routing.
-	if got, want := auths[0].Attributes["model_aliases"], `[{"name":"gpt-6-sol","alias":"sol"},{"name":"gpt-6-sol","alias":"my-sol","fork":true}]`; got != want {
+	// upstream_id adds a forked alias for routing that wins over a model_aliases
+	// entry for the same ID, so my-sol runs the model it is listed as.
+	if got, want := auths[0].Attributes["model_aliases"], `[{"name":"gpt-6-sol","alias":"my-sol","fork":true},{"name":"gpt-6-sol","alias":"sol"}]`; got != want {
 		t.Fatalf("model_aliases = %s, want %s", got, want)
 	}
 }

@@ -395,3 +395,41 @@ func TestUpstreamIDOnExistingIDIndependentOfCatalogOrder(t *testing.T) {
 		t.Fatalf("collision registered gpt-5.5 %d times or lost gpt-6-astra: %v", count, modelIDs(registered))
 	}
 }
+
+func TestRedefinedListedIDWithExcludedUpstreamIsDropped(t *testing.T) {
+	auth := restrictedTestAuth("codex", "codex-definition-excluded-upstream-test")
+	service := discoveryTestService(t, auth)
+	catalog := codexCatalogModelsForPlan("pro")
+	if findModel(catalog, "gpt-5.5") == nil || findModel(catalog, "gpt-6-astra") == nil {
+		t.Skip("Codex pro catalog lacks gpt-5.5 or gpt-6-astra")
+	}
+	auth.Attributes["excluded_models"] = "gpt-6-astra"
+	defineModels(auth, `[{"id":"gpt-5.5","upstream_id":"gpt-6-astra"}]`)
+	service.registerModelsForAuth(context.Background(), auth)
+	registered := GlobalModelRegistry().GetModelsForClient(auth.ID)
+	// Its alias sends gpt-5.5 to the excluded gpt-6-astra, so it must not be listed.
+	if containsModelID(registered, "gpt-5.5") || containsModelID(registered, "gpt-6-astra") {
+		t.Fatalf("route to an excluded model registered: %v", modelIDs(registered))
+	}
+}
+
+func TestDefinedRouteFollowsAuthAliasTable(t *testing.T) {
+	catalog := registry.GetClaudeModels()
+	if len(catalog) < 2 {
+		t.Skip("Claude catalog has fewer than two models")
+	}
+	aliased, defined := catalog[0], catalog[1]
+	auth := restrictedTestAuth("claude", "claude-definition-alias-conflict-test")
+	service := discoveryTestService(t, auth)
+	definitions := coreauth.ParseModelDefinitions(json.RawMessage(`[{"id":"local","upstream_id":"` + defined.ID + `"}]`))
+	coreauth.SetModelDefinitionsAttribute(auth, definitions)
+	// An alias table whose entry for local is not the definition's: requests
+	// for local run aliased, so the listing must describe aliased too.
+	coreauth.SetOAuthModelAliasesAttribute(auth, append([]config.OAuthModelAlias{{Name: aliased.ID, Alias: "local", Fork: true}},
+		coreauth.ModelDefinitionAliases(definitions)...))
+	service.registerModelsForAuth(context.Background(), auth)
+	local := findModel(GlobalModelRegistry().GetModelsForClient(auth.ID), "local")
+	if local == nil || local.MetadataModelID != aliased.ID {
+		t.Fatalf("local listed as %+v, want a route to %s", local, aliased.ID)
+	}
+}
