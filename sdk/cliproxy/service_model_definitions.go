@@ -8,6 +8,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -44,7 +45,7 @@ func applyModelDefinitionsForAuth(cfg *config.Config, auth *coreauth.Auth, provi
 	aliases := oauthModelAliasesForAuth(cfg, channel, auth.Attributes)
 	for _, setting := range settings {
 		if !hasModelIDFold(restricted, setting.Name) && setting.Alias == "" && setting.DefinesModel() {
-			models = appendDefinedModel(provider, catalog, excluded, models, setting.Name, "")
+			models = appendDefinedModel(provider, catalog, excluded, models, setting.Name, aliasTarget(aliases, setting.Name))
 		}
 	}
 	for _, definition := range definitions {
@@ -153,11 +154,12 @@ func routeExcluded(excluded []string, id, upstreamID string) bool {
 	return len(applyExcludedModels([]*ModelInfo{{ID: id}, {ID: upstreamID}}, excluded)) < 2
 }
 
-// aliasTarget returns the model an alias runs for id, or "".
+// aliasTarget returns the model an alias runs for id, without a thinking
+// suffix, or "".
 func aliasTarget(aliases []config.OAuthModelAlias, id string) string {
 	for _, alias := range aliases {
 		if strings.EqualFold(alias.Alias, id) {
-			return alias.Name
+			return thinking.ParseSuffix(alias.Name).ModelName
 		}
 	}
 	return ""

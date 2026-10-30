@@ -438,12 +438,19 @@ func TestDefinedIDWithExcludedChannelAliasTargetIsDropped(t *testing.T) {
 	auth := restrictedTestAuth("claude", "claude-definition-channel-alias-test")
 	service := discoveryTestService(t, auth)
 	upstream := registry.GetClaudeModels()[0].ID
-	service.cfg.OAuthModelAlias = map[string][]config.OAuthModelAlias{"claude": {{Name: upstream, Alias: "local"}}}
+	// A thinking suffix on the target still runs the excluded base model.
+	service.cfg.OAuthModelAlias = map[string][]config.OAuthModelAlias{"claude": {
+		{Name: upstream, Alias: "local"}, {Name: upstream + "(high)", Alias: "local-high"}, {Name: upstream, Alias: "local-settings"},
+	}}
+	service.cfg.OAuthSettings = map[string][]config.OAuthModelSetting{"claude": {{Name: "local-settings", DisplayName: "Settings"}}}
 	auth.Attributes["excluded_models"] = upstream
-	// Without a per-auth alias, requests for local run the channel alias target.
-	defineModels(auth, `[{"id":"local"}]`)
+	// Without a per-auth alias, requests for these IDs run the channel alias target.
+	defineModels(auth, `[{"id":"local"},{"id":"local-high"}]`)
 	service.registerModelsForAuth(context.Background(), auth)
-	if registered := GlobalModelRegistry().GetModelsForClient(auth.ID); containsModelID(registered, "local") || containsModelID(registered, upstream) {
-		t.Fatalf("defined ID routed to an excluded channel alias target: %v", modelIDs(registered))
+	registered := GlobalModelRegistry().GetModelsForClient(auth.ID)
+	for _, id := range []string{"local", "local-high", "local-settings", upstream} {
+		if containsModelID(registered, id) {
+			t.Fatalf("%s routed to an excluded channel alias target: %v", id, modelIDs(registered))
+		}
 	}
 }
