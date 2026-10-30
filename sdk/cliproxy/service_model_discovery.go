@@ -278,9 +278,13 @@ func synthesizeClaudeModel(model coreauth.UpstreamModel, catalog []*ModelInfo, u
 	if thinking := object.Capabilities.Thinking; thinking != nil && info.Thinking != nil &&
 		thinking.Types["adaptive"].Supported && !thinking.Types["enabled"].Supported {
 		// Adaptive-only: no token budget range, so auto and budgets map to
-		// adaptive effort instead of manual thinking.
+		// adaptive effort instead of manual thinking. The Claude applier only
+		// sends adaptive thinking to models with levels.
 		info.Thinking.Min, info.Thinking.Max = 0, 0
 		info.Thinking.DynamicAllowed = true
+		if len(info.Thinking.Levels) == 0 {
+			info.Thinking.Levels = slices.Clone(claudeEffortLevels[:3]) // low, medium, high
+		}
 	}
 	if object.Capabilities.Thinking != nil && !object.Capabilities.Thinking.Supported {
 		info.Thinking = nil

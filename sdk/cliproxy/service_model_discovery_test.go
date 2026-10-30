@@ -142,9 +142,11 @@ func TestDiscoverClaudeAdaptiveOnlyModelSkipsManualThinking(t *testing.T) {
 			`"thinking":{"supported":true,"types":{"adaptive":{"supported":true},"enabled":{"supported":false}}}}}`)},
 		{ID: "claude-b-1", Raw: json.RawMessage(`{"id":"claude-b-1","line":"b","capabilities":{"effort":{"low":{"supported":true},"high":{"supported":true}},` +
 			`"thinking":{"supported":true,"types":{"adaptive":{"supported":true},"enabled":{"supported":true}}}}}`)},
+		{ID: "claude-c-1", Raw: json.RawMessage(`{"id":"claude-c-1","line":"c","capabilities":` +
+			`{"thinking":{"supported":true,"types":{"adaptive":{"supported":true},"enabled":{"supported":false}}}}}`)},
 	}
 	models := discoverForTest("claude", nil, upstream)
-	if len(models) != 2 {
+	if len(models) != 3 {
 		t.Fatalf("discovered = %v", modelIDs(models))
 	}
 	if want := (&registry.ThinkingSupport{DynamicAllowed: true, Levels: []string{"low", "high"}}); !reflect.DeepEqual(models[0].Thinking, want) {
@@ -154,13 +156,15 @@ func TestDiscoverClaudeAdaptiveOnlyModelSkipsManualThinking(t *testing.T) {
 		t.Fatalf("manual-capable model lost its budget range: %+v", models[1].Thinking)
 	}
 
-	for _, model := range []string{"claude-a-1(auto)", "claude-a-1(8192)"} {
-		body, errApply := thinking.ApplyThinkingWithModelInfo([]byte(`{"model":"claude-a-1"}`), nil, model, "claude", "claude", "claude", models[0])
-		if errApply != nil {
-			t.Fatalf("%s: %v", model, errApply)
-		}
-		if got := gjson.GetBytes(body, "thinking.type").String(); got != "adaptive" || gjson.GetBytes(body, "thinking.budget_tokens").Exists() {
-			t.Fatalf("%s sent manual thinking to an adaptive-only model: %s", model, body)
+	for _, info := range []*ModelInfo{models[0], models[2]} {
+		for _, model := range []string{info.ID + "(auto)", info.ID + "(8192)"} {
+			body, errApply := thinking.ApplyThinkingWithModelInfo([]byte(`{"model":"`+info.ID+`"}`), nil, model, "claude", "claude", "claude", info)
+			if errApply != nil {
+				t.Fatalf("%s: %v", model, errApply)
+			}
+			if got := gjson.GetBytes(body, "thinking.type").String(); got != "adaptive" || gjson.GetBytes(body, "thinking.budget_tokens").Exists() {
+				t.Fatalf("%s sent manual thinking to an adaptive-only model: %s", model, body)
+			}
 		}
 	}
 }
