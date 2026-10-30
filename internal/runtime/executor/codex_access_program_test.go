@@ -315,3 +315,51 @@ func TestCodexDuplexFollowUpChangingAccessProgramRequiresReplay(t *testing.T) {
 		t.Fatalf("explicit variant: frames = %q, want the follow-up on daybreak_blue", frames)
 	}
 }
+
+// Compaction sends a variant's upstream model and program, not the
+// proxy-only variant ID.
+func TestCodexExecutorCompactSendsVariantAccessProgram(t *testing.T) {
+	var mu sync.Mutex
+	var path string
+	var upstreamBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		path, upstreamBody = r.URL.Path, body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"cmp_1","object":"response.compaction","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+	}))
+	t.Cleanup(server.Close)
+	for _, tt := range []struct {
+		name     string
+		executor interface {
+			Execute(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error)
+		}
+	}{
+		{name: "http", executor: NewCodexExecutor(&config.Config{})},
+		{name: "websockets", executor: NewCodexWebsocketsExecutor(&config.Config{})},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			auth := codexOAuthTestAuth(server.URL)
+			auth.ID = "codex-access-program-compact-" + tt.name
+			registerCodexAccessProgramVariant(t, auth)
+			req := cliproxyexecutor.Request{Model: "gpt-6-sol-daybreak-blue", Payload: []byte(codexAccessProgramTestPayload)}
+			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response"), Alt: "responses/compact"}
+			if _, errExecute := tt.executor.Execute(context.Background(), auth, req, opts); errExecute != nil {
+				t.Fatalf("Execute: %v", errExecute)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if path != "/responses/compact" {
+				t.Fatalf("upstream path = %q, want /responses/compact", path)
+			}
+			if got := gjson.GetBytes(upstreamBody, "model").String(); got != "gpt-6-sol" {
+				t.Fatalf("upstream model = %q, want the base model", got)
+			}
+			if got := gjson.GetBytes(upstreamBody, "access_programs.cyber").String(); got != "daybreak_blue" {
+				t.Fatalf("upstream access_programs.cyber = %q, want daybreak_blue", got)
+			}
+		})
+	}
+}

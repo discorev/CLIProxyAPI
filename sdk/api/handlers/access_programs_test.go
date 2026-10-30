@@ -154,3 +154,18 @@ func TestExecuteRejectsAccessProgramWithoutVariantOnCodexProviderRoute(t *testin
 		t.Fatalf("stream error = %+v, want model_not_found", streamErr)
 	}
 }
+
+// A compact request is resolved like any other, so a program no credential
+// offers is rejected before credential selection.
+func TestExecuteCompactRejectsAccessProgramWithoutVariant(t *testing.T) {
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient("test-access-program-compact", "codex", []*registry.ModelInfo{{ID: "gpt-access-compact-test"}})
+	t.Cleanup(func() { reg.UnregisterClient("test-access-program-compact") })
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+	body := []byte(`{"model":"gpt-access-compact-test","access_programs":{"cyber":"daybreak_blue"},"input":"hi"}`)
+
+	_, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai-response", "gpt-access-compact-test", body, "responses/compact")
+	if errMsg == nil || gjson.Get(errMsg.Error.Error(), "error.code").String() != "model_not_found" {
+		t.Fatalf("compact error = %+v, want model_not_found", errMsg)
+	}
+}
