@@ -364,6 +364,9 @@ func (s *Service) fetchRestrictedModels(ctx context.Context, auth *coreauth.Auth
 	entry.upstream = upstream
 	cache.mu.Unlock()
 	discoveryChanged := s.reconcileDiscoveredModels(auth, previous, upstream)
+	if s.modelDiscoveryEnabled(auth) && !accessProgramVariantsEqual(previous, upstream) {
+		discoveryChanged = true
+	}
 	if s.modelDiscoveryEnabled(auth) && !upstreamModelsEqual(previous, upstream) {
 		s.persistUpstreamModels(restrictedModelIdentity(auth), upstream)
 	}

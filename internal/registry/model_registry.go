@@ -45,6 +45,9 @@ type ModelInfo struct {
 	MetadataModelID string `json:"-"`
 	// RestrictedAccess is catalog-only metadata; it must never appear in model responses.
 	RestrictedAccess bool `json:"-"`
+	// AccessProgram is the Codex access_programs.cyber value a Daybreak variant
+	// sends with its MetadataModelID. It is internal and never appears in model responses.
+	AccessProgram string `json:"-"`
 	// ExplicitThinking indicates thinking/reasoning configuration was explicitly configured for this model.
 	ExplicitThinking bool `json:"-"`
 	// ExplicitInputModalities indicates input modalities were explicitly configured for this model.
@@ -1860,9 +1863,13 @@ func (r *ModelRegistry) GetFirstAvailableModel(handlerType string) (string, erro
 		return createdI > createdJ
 	})
 
-	// Find the first model with available clients
+	// Find the first model with available clients. Daybreak variants are
+	// skipped, so "auto" never selects a non-standard access program.
 	for _, model := range models {
 		if modelID, ok := model["id"].(string); ok {
+			if genuine, _ := r.AccessProgramVariantClients(modelID, ""); genuine > 0 {
+				continue
+			}
 			if count := r.GetModelCount(modelID); count > 0 {
 				return modelID, nil
 			}
@@ -1921,6 +1928,35 @@ func (r *ModelRegistry) ClientRegistrationEpoch(clientID string) uint64 {
 		return 0
 	}
 	return r.clientEpochs[clientID]
+}
+
+// GetClientModelInfo returns the model info a client registered for modelID, or nil.
+func (r *ModelRegistry) GetClientModelInfo(clientID, modelID string) *ModelInfo {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	return cloneModelInfo(r.clientModelInfos[clientID][modelID])
+}
+
+// AccessProgramVariantClients reports how clients register modelID for an
+// access program: genuine counts Daybreak variants carrying program (any
+// program when program is ""), and ordinary counts any other model registered
+// under the same ID.
+func (r *ModelRegistry) AccessProgramVariantClients(modelID, program string) (genuine, ordinary int) {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	for _, infos := range r.clientModelInfos {
+		for id, info := range infos {
+			if info == nil || !strings.EqualFold(id, modelID) {
+				continue
+			}
+			if info.AccessProgram != "" && (program == "" || strings.EqualFold(info.AccessProgram, program)) {
+				genuine++
+			} else {
+				ordinary++
+			}
+		}
+	}
+	return genuine, ordinary
 }
 
 // GetModelsForClient returns the models registered for a specific client.

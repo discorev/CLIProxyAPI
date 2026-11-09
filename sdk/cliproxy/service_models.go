@@ -302,6 +302,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	}
 	models = appendUniqueModels(models, s.filterRestrictedModelsLocked(a, pluginModels))
 	models = applyModelDefinitionsForAuth(s.cfg, a, provider, excluded, s.restrictedCatalogIDsLocked(a.Provider), models)
+	models = s.appendAccessProgramVariantsLocked(a, excluded, models)
 	if len(models) > 0 {
 		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		if strings.EqualFold(strings.TrimSpace(a.Provider), "antigravity") {

@@ -157,6 +157,21 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
 				return false
 			}
+			// The handler selected this credential for the initial request's access
+			// program. A follow-up asking for another program must be replayed so it
+			// is routed again, to a credential whose model list includes it. Only a
+			// follow-up that names a variant itself keeps the variant's program, as
+			// on any request.
+			if helps.RequestedCodexAccessProgram(payload) != helps.RequestedCodexAccessProgram(initial.originalPayload) {
+				clientModel := model
+				if clientModel == "" {
+					clientModel = strings.TrimSpace(gjson.GetBytes(initial.originalPayload, "model").String())
+				}
+				if _, variantProgram := helps.CodexAccessProgramRoute(auth, thinking.ParseSuffix(clientModel).ModelName); variantProgram == "" {
+					fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
+					return false
+				}
+			}
 			if model == "" {
 				model = req.Model
 				if model == "" {
@@ -447,6 +462,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				outputFallback = nil
 			}
 			observeCodexTokenEvent(reporter, payload)
+			current.accessProgramEcho.Observe(payload)
 			helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
 			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
 			// Steering acknowledgements, pending notifications and failures are opaque:
