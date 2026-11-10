@@ -64,7 +64,8 @@ var claudeCodeSubclientByEntrypoint = map[string]string{
 // pass-through. The Agent SDK entrypoints (sdk-ts, sdk-py) spawn the same
 // binary in stream-json mode, so their wire behavior matches the CLI. Other
 // first-party-looking entrypoints are cloaked until their CPA-reachable
-// request shape has been captured and reviewed.
+// request shape has been captured and reviewed. Hosts that embed the Agent SDK
+// may set their own entrypoint (e.g. t3-code); see isNativeClaudeEntrypoint.
 var nativeClaudeEntrypoints = map[string]bool{
 	"cli":           true,
 	"sdk-cli":       true,
@@ -158,8 +159,8 @@ func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bo
 
 	metadataUserID := gjson.GetBytes(payload, "metadata.user_id")
 	detection.MetadataUserID = metadataUserID.Exists() && metadataUserID.Type == gjson.String && isValidUserID(metadataUserID.String())
-	detection.NativeClient = nativeClaudeEntrypoints[entrypoint]
-	detection.NativePassthrough = nativePassthroughEligible(userAgent, entrypoint, detection.XAppCLI, detection.MetadataUserID, countTokens, cfg)
+	detection.NativeClient = isNativeClaudeEntrypoint(entrypoint, agentSDKVersion)
+	detection.NativePassthrough = nativePassthroughEligible(userAgent, entrypoint, agentSDKVersion, detection.XAppCLI, detection.MetadataUserID, countTokens, cfg)
 	standardSignals := detection.XAppCLI && detection.UserAgent && detection.BetasPresent && (countTokens || detection.MetadataUserID)
 	detection.HelperProfile = detection.NativeClient && matchesMeasuredClaudeCodeHelperProfile(headers, payload, countTokens, detection, cfg)
 	detection.StrongSignals = standardSignals || detection.HelperProfile
@@ -170,8 +171,8 @@ func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bo
 // nativePassthroughEligible accepts native Claude Code versions at or above the
 // configured device-profile baseline. The baseline is a forward-only floor: newer
 // patch, minor, and major versions remain eligible without a ceiling.
-func nativePassthroughEligible(userAgent, entrypoint string, xAppCLI, metadataUserID, countTokens bool, cfg *config.Config) bool {
-	if !xAppCLI || (!countTokens && !metadataUserID) || !nativeClaudeEntrypoints[entrypoint] {
+func nativePassthroughEligible(userAgent, entrypoint, agentSDKVersion string, xAppCLI, metadataUserID, countTokens bool, cfg *config.Config) bool {
+	if !xAppCLI || (!countTokens && !metadataUserID) || !isNativeClaudeEntrypoint(entrypoint, agentSDKVersion) {
 		return false
 	}
 	candidate, okCandidate := parseClaudeCLIVersion(userAgent)
@@ -515,6 +516,17 @@ func claudeJSONObjectHasKeys(raw []byte, want []string) bool {
 	}
 	closing, errClosing := decoder.Token()
 	return errClosing == nil && closing == json.Delim('}') && keyIndex == len(want)
+}
+
+// isNativeClaudeEntrypoint reports whether a Claude Code User-Agent comes from
+// the Claude Code binary. A versioned agent-sdk suffix is only added when the
+// Agent SDK spawns the binary, so any host-chosen entrypoint qualifies with it.
+// Without the suffix (interactive CLI, VS Code) the entrypoint must be listed.
+func isNativeClaudeEntrypoint(entrypoint, agentSDKVersion string) bool {
+	if nativeClaudeEntrypoints[entrypoint] {
+		return true
+	}
+	return entrypoint != "" && claudePackageVersionPattern.MatchString(agentSDKVersion)
 }
 
 func plausibleClaudeCodeUserAgent(userAgent string, cfg *config.Config) bool {

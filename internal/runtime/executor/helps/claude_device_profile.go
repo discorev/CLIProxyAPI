@@ -310,11 +310,11 @@ func claudeDeviceProfileScopeKey(auth *cliproxyauth.Auth, apiKey string) string 
 // wire identities from replacing one another in a credential's stabilized
 // profile. The CLI retains the legacy base scope for cache compatibility.
 func claudeDeviceProfileSubclientScope(profile ClaudeDeviceProfile) string {
-	entrypoint, _ := parseClaudeCodeUserAgentDetails(profile.UserAgent)
+	entrypoint, agentSDKVersion := parseClaudeCodeUserAgentDetails(profile.UserAgent)
 	if entrypoint == "" || entrypoint == "cli" {
 		return ""
 	}
-	if nativeClaudeEntrypoints[entrypoint] {
+	if isNativeClaudeEntrypoint(entrypoint, agentSDKVersion) {
 		return entrypoint
 	}
 	return "other"

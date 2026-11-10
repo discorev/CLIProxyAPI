@@ -151,6 +151,7 @@ func TestDetectClaudeCodeRequestClassifiesEntrypoints(t *testing.T) {
 		{name: "remote", userAgent: "claude-cli/2.1.280 (external, remote)", entrypoint: "remote", subclient: "claude-remote"},
 		{name: "github-action", userAgent: "claude-cli/2.1.280 (external, claude-code-github-action)", entrypoint: "claude-code-github-action", subclient: "claude-code-gh-action"},
 		{name: "unknown", userAgent: "claude-cli/2.1.280 (external, copied-client)", entrypoint: "copied-client"},
+		{name: "agent-sdk-host", userAgent: "claude-cli/2.1.280 (external, t3-code, agent-sdk/0.3.321)", entrypoint: "t3-code", agentSDKVersion: "0.3.321", native: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			headers := confirmedClaudeCodeHeaders()
@@ -608,6 +609,10 @@ func TestDetectClaudeCodeRequestNativePassthroughEligibility(t *testing.T) {
 		{name: "below floor", userAgent: "claude-cli/2.1.279 (external, cli)", xApp: "cli", payload: validPayload},
 		{name: "missing x-app", userAgent: "claude-cli/2.1.280 (external, cli)", payload: validPayload},
 		{name: "non-native entrypoint", userAgent: "claude-cli/2.1.280 (external, claude-desktop)", xApp: "cli", payload: validPayload},
+		{name: "agent-sdk host entrypoint", userAgent: "claude-cli/2.1.316 (external, t3-code, agent-sdk/0.3.321)", xApp: "cli", payload: validPayload, want: true},
+		{name: "agent-sdk host below floor", userAgent: "claude-cli/2.1.279 (external, t3-code, agent-sdk/0.3.321)", xApp: "cli", payload: validPayload},
+		{name: "host entrypoint without agent-sdk", userAgent: "claude-cli/2.1.280 (external, t3-code)", xApp: "cli", payload: validPayload},
+		{name: "host entrypoint with unversioned agent-sdk", userAgent: "claude-cli/2.1.280 (external, t3-code, agent-sdk/latest)", xApp: "cli", payload: validPayload},
 		{name: "invalid metadata", userAgent: "claude-cli/2.1.280 (external, cli)", xApp: "cli", payload: claudeCodeDetectionPayload("invalid")},
 		{name: "missing metadata", userAgent: "claude-cli/2.1.280 (external, cli)", xApp: "cli", payload: []byte(`{"messages":[]}`)},
 		{name: "count tokens without metadata", userAgent: "claude-cli/2.1.280 (external, cli)", xApp: "cli", payload: []byte(`{"messages":[]}`), countTokens: true, want: true},
