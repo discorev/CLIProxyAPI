@@ -151,7 +151,7 @@ func usageRetryAfter(value string, now time.Time) time.Duration {
 
 func claudeUsageHeaders() http.Header {
 	return http.Header{
-		"User-Agent":     {"claude-cli/2.1.280 (external, cli)"},
+		"User-Agent":     {"claude-cli/2.1.325 (external, cli)"},
 		"Content-Type":   {"application/json"},
 		"Anthropic-Beta": {"oauth-2025-04-20"},
 	}

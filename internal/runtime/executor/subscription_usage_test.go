@@ -26,7 +26,7 @@ func TestSubscriptionUsageFetchersUseExecutorHTTPTransport(t *testing.T) {
 				seen[req.URL.Path] = true
 				body := `{}`
 				if provider == "claude" {
-					if req.URL.Host != "api.anthropic.com" || req.Header.Get("User-Agent") != "claude-cli/2.1.280 (external, cli)" || req.Header.Get("anthropic-beta") != "oauth-2025-04-20" {
+					if req.URL.Host != "api.anthropic.com" || req.Header.Get("User-Agent") != "claude-cli/2.1.325 (external, cli)" || req.Header.Get("anthropic-beta") != "oauth-2025-04-20" {
 						t.Errorf("wrong claude endpoint/headers: %s %v", req.URL, req.Header)
 					}
 					switch req.URL.Path {

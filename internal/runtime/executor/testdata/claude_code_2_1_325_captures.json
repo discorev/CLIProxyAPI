@@ -1,0 +1,1597 @@
+{
+  "_source": "Claude Code 2.1.325 (macOS arm64) main turns captured against api.anthropic.com over OAuth; sanitized: ids are fakes, text and tool schemas are placeholders, cch is the unsigned placeholder.",
+  "main_turns": [
+    {
+      "name": "sdk-cli claude-opus-5-5",
+      "headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "claude-cli/2.1.325 (external, sdk-cli)",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "X-Stainless-Arch": "arm64",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-OS": "MacOS",
+        "X-Stainless-Package-Version": "0.128.0",
+        "X-Stainless-Retry-Count": "0",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1",
+        "X-Stainless-Timeout": "600",
+        "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,tool-provenance-2026-10-26,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "anthropic-version": "2023-06-01",
+        "x-app": "cli",
+        "x-claude-1p-request-class": "main",
+        "x-claude-code-prompt-id": "00000000-0000-4000-8000-000000000001",
+        "x-claude-code-request-class": "main",
+        "x-claude-code-sandy-plover": "[]",
+        "x-client-request-id": "10000000-0000-4000-8000-000000000001",
+        "Accept-Encoding": "gzip, deflate, br, zstd"
+      },
+      "body": {
+        "model": "claude-opus-5-5",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Reply with ok."
+              }
+            ]
+          },
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "<system-reminder>Context.</system-reminder>",
+                "cache_control": {
+                  "type": "ephemeral",
+                  "ttl": "1h"
+                }
+              }
+            ],
+            "output_config": {
+              "effort": "medium"
+            }
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.325.ee6; cc_entrypoint=sdk-cli; cch=00000; cc_prompt_id=00000000-0000-4000-8000-000000000001; cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;"
+          },
+          {
+            "type": "text",
+            "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+          },
+          {
+            "type": "text",
+            "text": "System prompt section 1.",
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h",
+              "scope": "global"
+            }
+          },
+          {
+            "type": "text",
+            "text": "System prompt section 2.",
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h"
+            }
+          }
+        ],
+        "tools": [
+          {
+            "name": "Agent",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Bash",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Edit",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ListAgents",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Read",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ReportFindings",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ScheduleWakeup",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Skill",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ToolSearch",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Workflow",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "DeferredToolPlaceholder",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          },
+          {
+            "name": "Write",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"account_uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        },
+        "max_tokens": 128000,
+        "thinking": {
+          "type": "adaptive",
+          "display": "omitted"
+        },
+        "context_management": {
+          "edits": [
+            {
+              "type": "clear_thinking_20251015",
+              "keep": "all"
+            }
+          ]
+        },
+        "output_config": {
+          "effort": "medium"
+        },
+        "diagnostics": {
+          "previous_message_id": null
+        },
+        "stream": true
+      }
+    },
+    {
+      "name": "sdk-cli claude-sonnet-4-6",
+      "headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "claude-cli/2.1.325 (external, sdk-cli)",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "X-Stainless-Arch": "arm64",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-OS": "MacOS",
+        "X-Stainless-Package-Version": "0.128.0",
+        "X-Stainless-Retry-Count": "0",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1",
+        "X-Stainless-Timeout": "600",
+        "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,tool-provenance-2026-10-26,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,thinking-binding-controls-2026-08-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "anthropic-version": "2023-06-01",
+        "x-app": "cli",
+        "x-claude-1p-request-class": "main",
+        "x-claude-code-prompt-id": "00000000-0000-4000-8000-000000000002",
+        "x-claude-code-request-class": "main",
+        "x-claude-code-sandy-plover": "[]",
+        "x-client-request-id": "10000000-0000-4000-8000-000000000002",
+        "Accept-Encoding": "gzip, deflate, br, zstd"
+      },
+      "body": {
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Reply with ok.",
+                "cache_control": {
+                  "type": "ephemeral",
+                  "ttl": "1h"
+                }
+              }
+            ]
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.325.ee6; cc_entrypoint=sdk-cli; cch=00000; cc_prompt_id=00000000-0000-4000-8000-000000000002; cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;"
+          },
+          {
+            "type": "text",
+            "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+          },
+          {
+            "type": "text",
+            "text": "System prompt section 1.",
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h",
+              "scope": "global"
+            }
+          },
+          {
+            "type": "text",
+            "text": "System prompt section 2.",
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h"
+            }
+          }
+        ],
+        "tools": [
+          {
+            "name": "Agent",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Bash",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Edit",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ListAgents",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Read",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ReportFindings",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ScheduleWakeup",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Skill",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ToolSearch",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Workflow",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "DeferredToolPlaceholder",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          },
+          {
+            "name": "Write",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"account_uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        },
+        "max_tokens": 32000,
+        "thinking": {
+          "type": "adaptive",
+          "display": "omitted"
+        },
+        "context_management": {
+          "edits": [
+            {
+              "type": "clear_thinking_20251015",
+              "keep": "all"
+            }
+          ]
+        },
+        "output_config": {
+          "effort": "high"
+        },
+        "diagnostics": {
+          "previous_message_id": null
+        },
+        "stream": true
+      }
+    },
+    {
+      "name": "cli claude-opus-5-5",
+      "headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "claude-cli/2.1.325 (external, cli)",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "X-Stainless-Arch": "arm64",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-OS": "MacOS",
+        "X-Stainless-Package-Version": "0.128.0",
+        "X-Stainless-Retry-Count": "0",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1",
+        "X-Stainless-Timeout": "600",
+        "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,tool-provenance-2026-10-26,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,dangerous-tool-use-2026-09-03,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "anthropic-version": "2023-06-01",
+        "x-app": "cli",
+        "x-claude-1p-request-class": "main",
+        "x-claude-code-prompt-id": "00000000-0000-4000-8000-000000000003",
+        "x-claude-code-request-class": "main",
+        "x-claude-code-sandy-plover": "[]",
+        "x-client-request-id": "10000000-0000-4000-8000-000000000003",
+        "Accept-Encoding": "gzip, deflate, br, zstd"
+      },
+      "body": {
+        "model": "claude-opus-5-5",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Reply with ok."
+              }
+            ]
+          },
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "<system-reminder>Context.</system-reminder>"
+              },
+              {
+                "type": "tool_addition",
+                "tool": {
+                  "type": "tool_reference",
+                  "name": "mcp__docs__batch"
+                }
+              },
+              {
+                "type": "tool_addition",
+                "tool": {
+                  "type": "tool_reference",
+                  "name": "mcp__docs__guide"
+                }
+              },
+              {
+                "type": "tool_addition",
+                "tool": {
+                  "type": "tool_reference",
+                  "name": "mcp__docs__update"
+                },
+                "cache_control": {
+                  "type": "ephemeral",
+                  "ttl": "1h"
+                }
+              }
+            ],
+            "output_config": {
+              "effort": "medium"
+            }
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.325.ee6; cc_entrypoint=cli; cch=00000; cc_prompt_id=00000000-0000-4000-8000-000000000003; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;"
+          },
+          {
+            "type": "text",
+            "text": "You are Claude Code, Anthropic's official CLI for Claude."
+          },
+          {
+            "type": "text",
+            "text": "System prompt section 1.",
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h",
+              "scope": "global"
+            }
+          },
+          {
+            "type": "text",
+            "text": "System prompt section 2.",
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h"
+            }
+          }
+        ],
+        "tools": [
+          {
+            "name": "Agent",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Artifact",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "AskUserQuestion",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Bash",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Edit",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ListAgents",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Read",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ReportFindings",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ScheduleWakeup",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Skill",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ToolSearch",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Workflow",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Write",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "mcp__docs__batch",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          },
+          {
+            "name": "mcp__docs__guide",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          },
+          {
+            "name": "DeferredToolPlaceholder",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          },
+          {
+            "name": "mcp__docs__update",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"account_uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        },
+        "max_tokens": 128000,
+        "thinking": {
+          "type": "adaptive",
+          "display": "updates"
+        },
+        "context_management": {
+          "edits": [
+            {
+              "type": "clear_thinking_20251015",
+              "keep": "all"
+            }
+          ]
+        },
+        "safeguards": [
+          {
+            "type": "dangerous_tool_use",
+            "classifier_context": {
+              "v": 1,
+              "permission_mode": "auto"
+            }
+          }
+        ],
+        "output_config": {
+          "effort": "medium"
+        },
+        "diagnostics": {
+          "previous_message_id": null
+        },
+        "stream": true
+      }
+    }
+  ],
+  "multi_turn": [
+    {
+      "name": "cli prompt 1",
+      "headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "claude-cli/2.1.325 (external, cli)",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "X-Stainless-Arch": "arm64",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-OS": "MacOS",
+        "X-Stainless-Package-Version": "0.128.0",
+        "X-Stainless-Retry-Count": "0",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1",
+        "X-Stainless-Timeout": "600",
+        "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,tool-provenance-2026-10-26,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,dangerous-tool-use-2026-09-03,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "anthropic-version": "2023-06-01",
+        "x-app": "cli",
+        "x-claude-1p-request-class": "main",
+        "x-claude-code-prompt-id": "00000000-0000-4000-8000-000000000004",
+        "x-claude-code-request-class": "main",
+        "x-claude-code-sandy-plover": "[]",
+        "x-client-request-id": "10000000-0000-4000-8000-000000000004",
+        "Accept-Encoding": "gzip, deflate, br, zstd"
+      },
+      "body": {
+        "model": "claude-opus-5-5",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Run echo ok with Bash."
+              }
+            ]
+          },
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "<system-reminder>Context.</system-reminder>"
+              },
+              {
+                "type": "tool_addition",
+                "tool": {
+                  "type": "tool_reference",
+                  "name": "mcp__docs__batch"
+                }
+              },
+              {
+                "type": "tool_addition",
+                "tool": {
+                  "type": "tool_reference",
+                  "name": "mcp__docs__guide"
+                }
+              },
+              {
+                "type": "tool_addition",
+                "tool": {
+                  "type": "tool_reference",
+                  "name": "mcp__docs__update"
+                },
+                "cache_control": {
+                  "type": "ephemeral",
+                  "ttl": "1h"
+                }
+              }
+            ],
+            "output_config": {
+              "effort": "medium"
+            }
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.325.a82; cc_entrypoint=cli; cch=00000; cc_prompt_id=00000000-0000-4000-8000-000000000004; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;"
+          },
+          {
+            "type": "text",
+            "text": "You are Claude Code, Anthropic's official CLI for Claude."
+          },
+          {
+            "type": "text",
+            "text": "System prompt section 1.",
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h",
+              "scope": "global"
+            }
+          },
+          {
+            "type": "text",
+            "text": "System prompt section 2.",
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h"
+            }
+          }
+        ],
+        "tools": [
+          {
+            "name": "Agent",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Artifact",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "AskUserQuestion",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Bash",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Edit",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ListAgents",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Read",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ReportFindings",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ScheduleWakeup",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Skill",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ToolSearch",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Workflow",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Write",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "mcp__docs__batch",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          },
+          {
+            "name": "mcp__docs__guide",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          },
+          {
+            "name": "DeferredToolPlaceholder",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          },
+          {
+            "name": "mcp__docs__update",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"account_uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        },
+        "max_tokens": 128000,
+        "thinking": {
+          "type": "adaptive",
+          "display": "updates"
+        },
+        "context_management": {
+          "edits": [
+            {
+              "type": "clear_thinking_20251015",
+              "keep": "all"
+            }
+          ]
+        },
+        "safeguards": [
+          {
+            "type": "dangerous_tool_use",
+            "classifier_context": {
+              "v": 1,
+              "permission_mode": "auto"
+            }
+          }
+        ],
+        "output_config": {
+          "effort": "medium"
+        },
+        "diagnostics": {
+          "previous_message_id": null
+        },
+        "stream": true
+      }
+    },
+    {
+      "name": "cli prompt 1 tool loop",
+      "headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "claude-cli/2.1.325 (external, cli)",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "X-Stainless-Arch": "arm64",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-OS": "MacOS",
+        "X-Stainless-Package-Version": "0.128.0",
+        "X-Stainless-Retry-Count": "0",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1",
+        "X-Stainless-Timeout": "600",
+        "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,tool-provenance-2026-10-26,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,dangerous-tool-use-2026-09-03,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "anthropic-version": "2023-06-01",
+        "x-app": "cli",
+        "x-claude-1p-request-class": "main",
+        "x-claude-code-prompt-id": "00000000-0000-4000-8000-000000000004",
+        "x-claude-code-request-class": "main",
+        "x-claude-code-sandy-plover": "[{\"name\":\"Bash\"}]",
+        "x-client-request-id": "10000000-0000-4000-8000-000000000005",
+        "Accept-Encoding": "gzip, deflate, br, zstd"
+      },
+      "body": {
+        "model": "claude-opus-5-5",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Run echo ok with Bash."
+              }
+            ]
+          },
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "<system-reminder>Context.</system-reminder>"
+              },
+              {
+                "type": "tool_addition",
+                "tool": {
+                  "type": "tool_reference",
+                  "name": "mcp__docs__batch"
+                }
+              },
+              {
+                "type": "tool_addition",
+                "tool": {
+                  "type": "tool_reference",
+                  "name": "mcp__docs__guide"
+                }
+              },
+              {
+                "type": "tool_addition",
+                "tool": {
+                  "type": "tool_reference",
+                  "name": "mcp__docs__update"
+                }
+              }
+            ],
+            "output_config": {
+              "effort": "medium"
+            }
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "toolu_fixture000000000000001",
+                "name": "Bash",
+                "input": {
+                  "command": "echo ok",
+                  "description": "Print ok"
+                },
+                "caller": {
+                  "type": "direct"
+                }
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "toolu_fixture000000000000001",
+                "content": "ok",
+                "is_error": false,
+                "cache_control": {
+                  "type": "ephemeral",
+                  "ttl": "1h"
+                }
+              }
+            ]
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.325.a82; cc_entrypoint=cli; cch=00000; cc_prev_req=req_fixture0000000000000001; cc_prompt_id=00000000-0000-4000-8000-000000000004; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;"
+          },
+          {
+            "type": "text",
+            "text": "You are Claude Code, Anthropic's official CLI for Claude."
+          },
+          {
+            "type": "text",
+            "text": "System prompt section 1.",
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h",
+              "scope": "global"
+            }
+          },
+          {
+            "type": "text",
+            "text": "System prompt section 2.",
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h"
+            }
+          }
+        ],
+        "tools": [
+          {
+            "name": "Agent",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Artifact",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "AskUserQuestion",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Bash",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Edit",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ListAgents",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Read",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ReportFindings",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ScheduleWakeup",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Skill",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ToolSearch",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Workflow",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Write",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "mcp__docs__batch",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          },
+          {
+            "name": "mcp__docs__guide",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          },
+          {
+            "name": "DeferredToolPlaceholder",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          },
+          {
+            "name": "mcp__docs__update",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"account_uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        },
+        "max_tokens": 128000,
+        "thinking": {
+          "type": "adaptive",
+          "display": "updates"
+        },
+        "context_management": {
+          "edits": [
+            {
+              "type": "clear_thinking_20251015",
+              "keep": "all"
+            }
+          ]
+        },
+        "safeguards": [
+          {
+            "type": "dangerous_tool_use",
+            "classifier_context": {
+              "v": 1,
+              "permission_mode": "auto"
+            }
+          }
+        ],
+        "output_config": {
+          "effort": "medium"
+        },
+        "diagnostics": {
+          "previous_message_id": "msg_fixture0000000000000001"
+        },
+        "stream": true
+      }
+    },
+    {
+      "name": "cli prompt 2",
+      "headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "claude-cli/2.1.325 (external, cli)",
+        "X-Claude-Code-Session-Id": "11111111-2222-4333-8444-555555555555",
+        "X-Stainless-Arch": "arm64",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-OS": "MacOS",
+        "X-Stainless-Package-Version": "0.128.0",
+        "X-Stainless-Retry-Count": "0",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.12.1",
+        "X-Stainless-Timeout": "600",
+        "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,tool-provenance-2026-10-26,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,dangerous-tool-use-2026-09-03,thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "anthropic-version": "2023-06-01",
+        "x-app": "cli",
+        "x-claude-1p-request-class": "main",
+        "x-claude-code-prompt-id": "00000000-0000-4000-8000-000000000005",
+        "x-claude-code-request-class": "main",
+        "x-claude-code-sandy-plover": "[{\"name\":\"Bash\"}]",
+        "x-client-request-id": "10000000-0000-4000-8000-000000000006",
+        "Accept-Encoding": "gzip, deflate, br, zstd"
+      },
+      "body": {
+        "model": "claude-opus-5-5",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Run echo ok with Bash."
+              }
+            ]
+          },
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "<system-reminder>Context.</system-reminder>"
+              },
+              {
+                "type": "tool_addition",
+                "tool": {
+                  "type": "tool_reference",
+                  "name": "mcp__docs__batch"
+                }
+              },
+              {
+                "type": "tool_addition",
+                "tool": {
+                  "type": "tool_reference",
+                  "name": "mcp__docs__guide"
+                }
+              },
+              {
+                "type": "tool_addition",
+                "tool": {
+                  "type": "tool_reference",
+                  "name": "mcp__docs__update"
+                }
+              }
+            ],
+            "output_config": {
+              "effort": "medium"
+            }
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "toolu_fixture000000000000001",
+                "name": "Bash",
+                "input": {
+                  "command": "echo ok",
+                  "description": "Print ok"
+                },
+                "caller": {
+                  "type": "direct"
+                }
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "toolu_fixture000000000000001",
+                "content": "ok",
+                "is_error": false
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "done"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Reply with ok again.",
+                "cache_control": {
+                  "type": "ephemeral",
+                  "ttl": "1h"
+                }
+              }
+            ]
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.325.a82; cc_entrypoint=cli; cch=00000; cc_prev_req=req_fixture0000000000000002; cc_prompt_id=00000000-0000-4000-8000-000000000005; cc_turn_origin=human; cc_prompt_index=2; cc_turn_index=2;"
+          },
+          {
+            "type": "text",
+            "text": "You are Claude Code, Anthropic's official CLI for Claude."
+          },
+          {
+            "type": "text",
+            "text": "System prompt section 1.",
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h",
+              "scope": "global"
+            }
+          },
+          {
+            "type": "text",
+            "text": "System prompt section 2.",
+            "cache_control": {
+              "type": "ephemeral",
+              "ttl": "1h"
+            }
+          }
+        ],
+        "tools": [
+          {
+            "name": "Agent",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Artifact",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "AskUserQuestion",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Bash",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Edit",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ListAgents",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Read",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ReportFindings",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ScheduleWakeup",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Skill",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "ToolSearch",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Workflow",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "Write",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "mcp__docs__batch",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          },
+          {
+            "name": "mcp__docs__guide",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          },
+          {
+            "name": "DeferredToolPlaceholder",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          },
+          {
+            "name": "mcp__docs__update",
+            "description": "Tool description.",
+            "input_schema": {
+              "type": "object",
+              "properties": {}
+            },
+            "defer_loading": true
+          }
+        ],
+        "metadata": {
+          "user_id": "{\"device_id\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"account_uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"
+        },
+        "max_tokens": 128000,
+        "thinking": {
+          "type": "adaptive",
+          "display": "updates"
+        },
+        "context_management": {
+          "edits": [
+            {
+              "type": "clear_thinking_20251015",
+              "keep": "all"
+            }
+          ]
+        },
+        "safeguards": [
+          {
+            "type": "dangerous_tool_use",
+            "classifier_context": {
+              "v": 1,
+              "permission_mode": "auto"
+            }
+          }
+        ],
+        "output_config": {
+          "effort": "medium"
+        },
+        "diagnostics": {
+          "previous_message_id": "msg_fixture0000000000000002"
+        },
+        "stream": true
+      }
+    }
+  ]
+}

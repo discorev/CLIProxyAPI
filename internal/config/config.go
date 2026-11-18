@@ -170,6 +170,13 @@ type Config struct {
 	// the auth/OAuth token file). Default false preserves the per-client "auto" behavior.
 	DisableClaudeCloakMode bool `yaml:"disable-claude-cloak-mode" json:"disable-claude-cloak-mode"`
 
+	// ClaudeCloakRefusalFallback lets the cloak add Claude Code's server-side
+	// refusal fallback (fallbacks: claude-opus-5-5 -> claude-opus-4-8,
+	// claude-fable-5-1 -> claude-opus-5) to cloaked requests that carry none.
+	// Default false: the cloak never adds fallbacks. Caller and payload-rule
+	// fallbacks are always forwarded unchanged.
+	ClaudeCloakRefusalFallback bool `yaml:"claude-cloak-refusal-fallback" json:"claude-cloak-refusal-fallback"`
+
 	// ClaudeNativePassthrough forwards genuine Claude Code requests without the
 	// normal profile and cloaking transformations, except for selected credential
 	// authentication, OAuth identity, and CCH signing. Default true.

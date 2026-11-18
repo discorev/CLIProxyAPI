@@ -30,7 +30,7 @@ func claudeNativeHelperHeaders(betas, compression string) http.Header {
 		"Accept":            {"application/json"},
 		"Accept-Encoding":   {compression},
 		"Content-Type":      {"application/json"},
-		"User-Agent":        {"claude-cli/2.1.280 (external, cli)"},
+		"User-Agent":        {"claude-cli/2.1.325 (external, cli)"},
 		"X-App":             {"cli"},
 		"Anthropic-Beta":    {betas},
 		"Anthropic-Version": {"2023-06-01"},
@@ -39,8 +39,8 @@ func claudeNativeHelperHeaders(betas, compression string) http.Header {
 		"X-Client-Request-Id":                       {"66666666-7777-4888-8999-aaaaaaaaaaaa"},
 		"X-Stainless-Lang":                          {"js"},
 		"X-Stainless-Runtime":                       {"node"},
-		"X-Stainless-Package-Version":               {"0.112.1"},
-		"X-Stainless-Runtime-Version":               {"v26.3.0"},
+		"X-Stainless-Package-Version":               {"0.128.0"},
+		"X-Stainless-Runtime-Version":               {"v26.12.1"},
 		"X-Stainless-OS":                            {"MacOS"},
 		"X-Stainless-Arch":                          {"arm64"},
 		"X-Stainless-Retry-Count":                   {"0"},
@@ -380,5 +380,61 @@ func TestClaudeExecutor_Native280HaikuTitleHelperPreservesServerSideFallbackBeta
 	outBeta := helps.HeaderValueCaseInsensitive(seenHeaders, "Anthropic-Beta")
 	if !strings.Contains(outBeta, "server-side-fallback-2026-06-01") {
 		t.Fatalf("Anthropic-Beta = %q, want server-side-fallback-2026-06-01 preserved for 2.1.280 title helper", outBeta)
+	}
+}
+
+// claude325TitleHelperBetas is the anthropic-beta a captured Claude Code
+// 2.1.325 session-title helper (claude-haiku-5-5) sent.
+const claude325TitleHelperBetas = "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12," +
+	"context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01," +
+	"mid-conversation-tool-changes-2026-07-01,tool-provenance-2026-10-26,thinking-token-count-2026-05-13," +
+	"mid-conversation-system-clear-at-2026-08-21,claude-code-side-query-2026-09-29,effort-2025-11-24," +
+	"structured-outputs-2025-12-15,cache-diagnosis-2026-04-07"
+
+// claude325TitleHelperPayload is a sanitized body with the captured 2.1.325
+// title helper's shape: claude-haiku-5-5, the session effort in output_config,
+// no thinking, max_tokens 128000.
+func claude325TitleHelperPayload() []byte {
+	return []byte(`{"model":"claude-haiku-5-5","messages":[{"role":"user","content":[{"type":"text","text":"<session>placeholder</session>"}]}],"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.325.000; cc_entrypoint=cli; cch=00000;"},{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."},{"type":"text","text":"Return a short title."}],"tools":[],"metadata":{"user_id":"` + strings.ReplaceAll(claudeNativeHelperUserID, `"`, `\"`) + `"},"max_tokens":128000,"output_config":{"effort":"medium","format":{"type":"json_schema","schema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}}},"stream":true}`)
+}
+
+// A genuine 2.1.325 title helper is confirmed by its measured helper profile;
+// with native passthrough off its beta header must still reach Anthropic
+// unchanged, effort-2025-11-24 included.
+func TestClaudeExecutor_Confirmed325TitleHelperKeepsCapturedBetas(t *testing.T) {
+	var upstreamHeaders http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		upstreamHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku-5-5\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	payload := claude325TitleHelperPayload()
+	headers := claudeNativeHelperHeaders(claude325TitleHelperBetas, "gzip, deflate, br, zstd")
+	if detection := helps.DetectClaudeCodeRequest(headers, payload, false); !detection.Confirmed || !detection.HelperProfile {
+		t.Fatalf("detection = %+v, want a confirmed helper profile", detection)
+	}
+	cfg := &config.Config{}
+	cfg.ClaudeNativePassthrough = false
+	result, errStream := NewClaudeExecutor(cfg).ExecuteStream(context.Background(), claudeNativeHelperOAuthAuth(server.URL), cliproxyexecutor.Request{
+		Model:   "claude-haiku-5-5",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatClaude,
+		OriginalRequest: payload,
+		Headers:         headers,
+	})
+	if errStream != nil {
+		t.Fatalf("ExecuteStream() error = %v", errStream)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v", chunk.Err)
+		}
+	}
+	if got := upstreamHeaders.Get("Anthropic-Beta"); got != claude325TitleHelperBetas {
+		t.Fatalf("Anthropic-Beta =\n%s\nwant captured\n%s", got, claude325TitleHelperBetas)
 	}
 }

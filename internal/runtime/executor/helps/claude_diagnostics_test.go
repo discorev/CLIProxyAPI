@@ -181,6 +181,16 @@ func TestClaudeContinuityHelperPredicates(t *testing.T) {
 		t.Fatal("IsClaudeNewPromptTurn(tool_result) = true, want false")
 	}
 
+	// 2.1.325 can end a request with a role=system message after the user turn.
+	trailingSystemPrompt := []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":[{"type":"text","text":"next"}]},{"role":"system","content":"reminder"}]}`)
+	if !IsClaudeNewPromptTurn(trailingSystemPrompt) {
+		t.Fatal("IsClaudeNewPromptTurn(user text, trailing system) = false, want true")
+	}
+	trailingSystemToolResult := []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"tool_use","id":"t1"}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},{"role":"system","content":"reminder"}]}`)
+	if IsClaudeNewPromptTurn(trailingSystemToolResult) {
+		t.Fatal("IsClaudeNewPromptTurn(tool_result, trailing system) = true, want false")
+	}
+
 	newPromptBody := []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"explain sorting"}]}`)
 	if !IsClaudeNewPromptTurn(newPromptBody) {
 		t.Fatal("IsClaudeNewPromptTurn(user text) = false, want true")

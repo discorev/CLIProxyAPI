@@ -18,6 +18,9 @@ func fixtureAuth() *cliproxyauth.Auth {
 	return &cliproxyauth.Auth{Attributes: attrs}
 }
 
+// claudeUnmanagedTestBeta is a beta no Claude Code profile assembles.
+const claudeUnmanagedTestBeta = "future-feature-2030-01-01"
+
 // A caller the cloak does not recognize (a Claude Code newer than the pinned
 // profile) keeps betas the proxy does not manage: dropping them fails whole
 // turns whose features need the missing authorization (#5738). per-turn-control
@@ -31,16 +34,16 @@ func TestApplyClaudeHeaders_ForwardsUnmanagedCallerBetas(t *testing.T) {
 		t.Fatalf("NewRequest() error = %v", errReq)
 	}
 	incoming := http.Header{}
-	incoming.Set("Anthropic-Beta", "message-threads-2026-08-12")
+	incoming.Set("Anthropic-Beta", claudeUnmanagedTestBeta)
 	if errHeaders := applyClaudeHeaders(req, auth, auth.Attributes[cliproxyauth.AttributeAPIKey], false, nil, []byte(`{"model":"claude-fable-5-1"}`), &config.Config{}, incoming, false); errHeaders != nil {
 		t.Fatalf("applyClaudeHeaders() error = %v", errHeaders)
 	}
 	betas := req.Header.Get("Anthropic-Beta")
-	if !strings.Contains(betas, "message-threads-2026-08-12") {
+	if !strings.HasSuffix(betas, ","+claudeUnmanagedTestBeta) {
 		t.Fatalf("Anthropic-Beta = %q, want unmanaged caller beta forwarded", betas)
 	}
-	if !strings.Contains(betas, "mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24") {
-		t.Fatalf("Anthropic-Beta = %q, want fable-5-1 per-turn-control between mid-conversation-system and tool-changes", betas)
+	if !strings.Contains(betas, "prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,tool-provenance-2026-10-26,thinking-token-count-2026-05-13,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24") {
+		t.Fatalf("Anthropic-Beta = %q, want fable-5-1 per-turn-control in the 2.1.325 model phase", betas)
 	}
 }
 
@@ -73,7 +76,7 @@ func TestApplyClaudeHeaders_PreservesNativeGatewayHintsOnly(t *testing.T) {
 	}{
 		{name: "confirmed main", requestClass: "main", confirmed: true},
 		{name: "confirmed auxiliary", requestClass: "auxiliary", confirmed: true},
-		{name: "unconfirmed caller", requestClass: "main"},
+		{name: "unconfirmed caller", requestClass: "auxiliary"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
@@ -96,6 +99,14 @@ func TestApplyClaudeHeaders_PreservesNativeGatewayHintsOnly(t *testing.T) {
 				got := req.Header.Get(key)
 				if tt.confirmed && got != values[0] {
 					t.Errorf("%s = %q, want %q", key, got, values[0])
+				}
+				// The cloak derives its own request class for an unconfirmed
+				// caller (a main turn here); every other hint is dropped.
+				if !tt.confirmed && key == "x-claude-code-request-class" {
+					if got != "main" {
+						t.Errorf("unconfirmed caller request class = %q, want derived main", got)
+					}
+					continue
 				}
 				if !tt.confirmed && got != "" {
 					t.Errorf("unconfirmed caller forwarded %s = %q", key, got)
@@ -120,7 +131,7 @@ func TestApplyClaudeHeaders_ForwardsUnmanagedCallerBetas_OAuth(t *testing.T) {
 		t.Fatalf("NewRequest() error = %v", errReq)
 	}
 	incoming := http.Header{}
-	incoming.Set("Anthropic-Beta", "message-threads-2026-08-12,mid-conversation-system-2026-04-07")
+	incoming.Set("Anthropic-Beta", claudeUnmanagedTestBeta+",mid-conversation-system-2026-04-07")
 	body := []byte(`{
 		"model": "claude-fable-5-1",
 		"max_tokens": 16,
@@ -134,10 +145,45 @@ func TestApplyClaudeHeaders_ForwardsUnmanagedCallerBetas_OAuth(t *testing.T) {
 		t.Fatalf("applyClaudeHeaders() error = %v", errHeaders)
 	}
 	betas := req.Header.Get("Anthropic-Beta")
-	if !strings.Contains(betas, "message-threads-2026-08-12") {
+	if !strings.Contains(betas, claudeUnmanagedTestBeta) {
 		t.Fatalf("Anthropic-Beta = %q, want unmanaged caller beta forwarded on OAuth", betas)
 	}
-	if !strings.Contains(betas, "mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01") {
+	if strings.Contains(betas, claudeMidConvSystemBeta) {
+		t.Fatalf("Anthropic-Beta = %q, want headerless mid-conversation-system dropped like 2.1.325", betas)
+	}
+	if !strings.Contains(betas, "prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01") {
 		t.Fatalf("Anthropic-Beta = %q, want fable-5-1 per-turn-control assembled", betas)
+	}
+}
+
+// Probes and Haiku requests without fallbacks never carry a server-side
+// fallback beta, neither the list (2026-06-01) nor the default (2026-07-01)
+// variant, nor fallback-credit-2026-06-01, even when a caller on a custom
+// gateway asks for them.
+func TestApplyClaudeHeaders_StripsBothServerSideFallbackBetasFromProbesAndHaiku(t *testing.T) {
+	t.Parallel()
+
+	for name, body := range map[string]string{
+		"probe": `{"model":"claude-opus-5-5","max_tokens":1,"messages":[{"role":"user","content":"quota"}]}`,
+		"haiku": `{"model":"claude-haiku-4-5-20251001","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			auth := fixtureAuth()
+			req, errReq := http.NewRequest(http.MethodPost, "https://gateway.example.invalid/v1/messages", nil)
+			if errReq != nil {
+				t.Fatalf("NewRequest() error = %v", errReq)
+			}
+			incoming := http.Header{}
+			incoming.Set("Anthropic-Beta", claudeServerSideFallbackBeta+","+claudeServerSideFallbackDefaultBeta+","+claudeFallbackCreditBeta)
+			if errHeaders := applyClaudeHeaders(req, auth, auth.Attributes[cliproxyauth.AttributeAPIKey], false, nil, []byte(body), &config.Config{}, incoming, false); errHeaders != nil {
+				t.Fatalf("applyClaudeHeaders() error = %v", errHeaders)
+			}
+			betas := req.Header.Get("Anthropic-Beta")
+			for _, beta := range []string{claudeServerSideFallbackBeta, claudeServerSideFallbackDefaultBeta, claudeFallbackCreditBeta} {
+				if strings.Contains(betas, beta) {
+					t.Errorf("Anthropic-Beta = %q, want %s stripped", betas, beta)
+				}
+			}
+		})
 	}
 }

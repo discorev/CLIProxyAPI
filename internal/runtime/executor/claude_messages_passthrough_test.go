@@ -222,9 +222,11 @@ func TestClaudeExecutor_PreserveCallerFingerprintAlignsSessionIDWithBody(t *test
 		t.Fatalf("header session %q != body session %q", headerSession, bodySession)
 	}
 
-	// Verify unconfirmed caller's X-Claude-Code-Request-Class was not leaked:
-	if got := seenHeaders.Get("X-Claude-Code-Request-Class"); got != "" {
-		t.Fatalf("X-Claude-Code-Request-Class = %q, want stripped for unconfirmed caller", got)
+	// The unconfirmed caller's forged X-Claude-Code-Request-Class is not leaked;
+	// the cloak sends the class 2.1.325 derives for a main turn instead. The
+	// wire-casing pass lowercases the name, so read it case-insensitively.
+	if got := helps.HeaderValueCaseInsensitive(seenHeaders, "X-Claude-Code-Request-Class"); got != "main" {
+		t.Fatalf("X-Claude-Code-Request-Class = %q, want cloak-derived main for unconfirmed caller", got)
 	}
 }
 

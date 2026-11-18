@@ -328,6 +328,14 @@ func resetClaudeDiagnosticsForTest() {
 // IsClaudeNewPromptTurn inspects the request messages to determine whether
 // this request starts a new user prompt turn (requiring a new cc_prompt_id)
 // versus a tool continuation step (which reuses the current cc_prompt_id).
+//
+// It follows the executor's billing turn index, so the prompt id rotates
+// exactly when cc_prompt_index advances: the trailing run of consecutive user
+// messages is one turn (role=system messages inside or after it are skipped,
+// as 2.1.325 first turns end with one), and the run's first user message
+// decides. 2.1.325 sends a tool_result message followed by a separate user
+// text message (for example a reminder), which is still the same tool
+// continuation.
 func IsClaudeNewPromptTurn(body []byte) bool {
 	if IsClaudeProbeOrHelperRequest(body) {
 		return false
@@ -340,13 +348,28 @@ func IsClaudeNewPromptTurn(body []byte) bool {
 	if len(arr) == 0 {
 		return true
 	}
-	lastMsg := arr[len(arr)-1]
-	if lastMsg.Get("role").String() != "user" {
+	last := len(arr) - 1
+	for last >= 0 && arr[last].Get("role").String() == "system" {
+		last--
+	}
+	if last < 0 {
+		return true
+	}
+	if arr[last].Get("role").String() != "user" {
 		return false
 	}
-	content := lastMsg.Get("content")
+	first := last
+	for i := last - 1; i >= 0; i-- {
+		role := arr[i].Get("role").String()
+		if role == "assistant" {
+			break
+		}
+		if role == "user" {
+			first = i
+		}
+	}
+	content := arr[first].Get("content")
 	if content.IsArray() {
-		// If any element is a tool_result, this is a tool continuation turn.
 		for _, part := range content.Array() {
 			if part.Get("type").String() == "tool_result" {
 				return false
@@ -492,6 +515,12 @@ func isClaudeTitleHelperRequest(body []byte) bool {
 		}
 	}
 	return false
+}
+
+// IsClaudeProbeRequest reports whether the request is a minimal probe or
+// preflight (max_tokens: 1), such as Claude Code's quota probe.
+func IsClaudeProbeRequest(body []byte) bool {
+	return isClaudeProbeRequest(body)
 }
 
 // IsClaudeProbeOrHelperRequest reports whether the request is a minimal

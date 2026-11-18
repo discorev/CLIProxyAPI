@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -149,7 +150,15 @@ func computeFingerprint(messageText, version string) string {
 
 // generateBillingHeader creates the x-anthropic-billing-header text block that
 // Claude Code prepends to its system prompt. cch is present only on signed paths.
-func generateBillingHeader(cchSigning bool, version, messageText, entrypoint, workload string, isSubagent bool, prevReq, promptID string, turnOrigin ...string) string {
+//
+// Field order follows 2.1.325: cc_version; cc_entrypoint; cch; cc_workload;
+// cc_is_subagent; cc_prev_req; cc_prompt_id; cc_turn_origin; cc_prompt_index;
+// cc_turn_index. The attribution fields after cc_is_subagent are first-party
+// only and so follow cchSigning. turnIndex is the transcript position of the
+// current human turn (see claudeBillingTurnIndex); a human turn advances the
+// prompt index together with the turn index, so both carry the same value.
+// They are written only alongside cc_turn_origin=human and only from 1 up.
+func generateBillingHeader(cchSigning bool, version, messageText, entrypoint, workload string, isSubagent bool, prevReq, promptID string, turnIndex int, turnOrigin ...string) string {
 	if entrypoint == "" {
 		entrypoint = "cli"
 	}
@@ -187,9 +196,58 @@ func generateBillingHeader(cchSigning bool, version, messageText, entrypoint, wo
 		}
 		if len(turnOrigin) > 0 && turnOrigin[0] == "human" {
 			b.WriteString(" cc_turn_origin=human;")
+			if turnIndex >= 1 {
+				index := strconv.Itoa(turnIndex)
+				b.WriteString(" cc_prompt_index=")
+				b.WriteString(index)
+				b.WriteString("; cc_turn_index=")
+				b.WriteString(index)
+				b.WriteByte(';')
+			}
 		}
 	}
 	return b.String()
+}
+
+// claudeBillingTurnIndex derives 2.1.325's transcript-relative turn position
+// from the request itself rather than process state. A turn opens at the first
+// user message and at each user message that follows an assistant message, so
+// a run of consecutive user messages is one turn; role=system messages between
+// them do not split or open a turn. A user message holding tool_result blocks
+// continues the turn whose tool call it answers, so a tool loop keeps its
+// position. Claude Code numbers a conversation's first human turn 1.
+func claudeBillingTurnIndex(payload []byte) int {
+	turns := 0
+	previousRole := ""
+	gjson.GetBytes(payload, "messages").ForEach(func(_, message gjson.Result) bool {
+		role := message.Get("role").String()
+		if role != "user" {
+			if role == "assistant" {
+				previousRole = role
+			}
+			return true
+		}
+		followsUser := previousRole == "user"
+		previousRole = role
+		if followsUser {
+			return true
+		}
+		continuation := false
+		if content := message.Get("content"); content.IsArray() {
+			content.ForEach(func(_, block gjson.Result) bool {
+				if block.Get("type").String() == "tool_result" {
+					continuation = true
+					return false
+				}
+				return true
+			})
+		}
+		if !continuation {
+			turns++
+		}
+		return true
+	})
+	return turns
 }
 
 func resolveClaudeContinuityTags(
@@ -301,6 +359,7 @@ func claudeCCHFallbackBillingHeader(ctx context.Context, cfg *config.Config, pay
 		isSubagent,
 		prevReq,
 		promptID,
+		0,
 	)
 }
 
@@ -312,7 +371,7 @@ Report what actually happened, not what you intended. When you say something is 
 
 func checkSystemInstructionsWithMode(payload []byte, strictMode bool, keepCallerSystemTopLevel ...bool) []byte {
 	keepAtTopLevel := len(keepCallerSystemTopLevel) > 0 && keepCallerSystemTopLevel[0]
-	return checkSystemInstructionsWithSigningMode(payload, strictMode, false, "2.1.280", "cli", "", keepAtTopLevel)
+	return checkSystemInstructionsWithSigningMode(payload, strictMode, false, "2.1.325", "cli", "", keepAtTopLevel)
 }
 
 // checkSystemInstructionsWithSigningMode keeps the top-level system in Claude
@@ -414,7 +473,11 @@ func checkSystemInstructionsWithSigningModeAt(
 	system := gjson.GetBytes(payload, "system")
 	messageText := claudeBillingFingerprintMessageText(payload)
 
-	billingText := generateBillingHeader(cchSigning, version, messageText, entrypoint, workload, isSubagent, prevReq, promptID, turnOrigin...)
+	turnIndex := 0
+	if len(turnOrigin) > 0 && turnOrigin[0] == "human" {
+		turnIndex = claudeBillingTurnIndex(payload)
+	}
+	billingText := generateBillingHeader(cchSigning, version, messageText, entrypoint, workload, isSubagent, prevReq, promptID, turnIndex, turnOrigin...)
 	billingBlock := buildTextBlock(billingText, nil)
 
 	isExplicit := (len(turnOrigin) > 1 && turnOrigin[1] == "explicit_cache_mode") || isExplicitPromptCacheMode(payload)
@@ -1078,9 +1141,29 @@ func captureClaudeCodeFableState(before, after []byte, cloaked bool) claudeCodeF
 	}
 }
 
+// claudeCloakRefusalFallbackEnabled reports whether the cloak may add Claude
+// Code's server-side refusal fallback (claude-cloak-refusal-fallback).
+func claudeCloakRefusalFallbackEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.ClaudeCloakRefusalFallback
+}
+
+// claudeCloakRefusalFallbackModel is the fallback model Claude Code names for
+// model, or "" when it sends none.
+func claudeCloakRefusalFallbackModel(model string) string {
+	switch {
+	case isClaudeFable51Model(model):
+		return "claude-opus-5"
+	case isClaudeOpus55Model(model):
+		return "claude-opus-4-8"
+	}
+	return ""
+}
+
 // reconcileClaudeCodeFableModelAfterPayload reconciles model-specific additions
 // (Opus fallback, thinking.display=updates, and # Reporting outcomes system block)
 // if payload rules rewrite the request model between Fable 5.1 and non-Fable models.
+// refusalFallback mirrors claude-cloak-refusal-fallback: when false no fallback
+// is added for the rewritten model.
 func reconcileClaudeCodeFableModelAfterPayload(
 	body []byte,
 	fableState claudeCodeFableState,
@@ -1088,6 +1171,7 @@ func reconcileClaudeCodeFableModelAfterPayload(
 	payloadTouchedDisplay bool,
 	cloaked bool,
 	isProbeOrHelper bool,
+	refusalFallback bool,
 ) []byte {
 	if !cloaked || len(body) == 0 {
 		return body
@@ -1127,11 +1211,8 @@ func reconcileClaudeCodeFableModelAfterPayload(
 	// caller or payload-rule fallback; only replace one inserted by the cloak.
 	if fableState.injectedFallbacks && !payloadTouchedFallbacks {
 		wantFallback := ""
-		switch {
-		case isClaudeFable51Model(currentModel):
-			wantFallback = "claude-opus-5"
-		case isClaudeOpus55Model(currentModel):
-			wantFallback = "claude-opus-4-8"
+		if refusalFallback {
+			wantFallback = claudeCloakRefusalFallbackModel(currentModel)
 		}
 		if gjson.GetBytes(body, "fallbacks.0.model").String() != wantFallback {
 			body, _ = sjson.DeleteBytes(body, "fallbacks")
@@ -1141,7 +1222,7 @@ func reconcileClaudeCodeFableModelAfterPayload(
 	if isClaudeFable51Model(currentModel) {
 		// Non-Fable rewritten to Fable 5.1 (or original Fable 5.1): attach Fable additions
 		// unless matching payload rules explicitly configured or filtered them.
-		if !gjson.GetBytes(body, "fallbacks").Exists() && !payloadTouchedFallbacks {
+		if refusalFallback && !gjson.GetBytes(body, "fallbacks").Exists() && !payloadTouchedFallbacks {
 			body, _ = sjson.SetRawBytes(body, "fallbacks", []byte(`[{"model":"claude-opus-5"}]`))
 		}
 		if gjson.GetBytes(body, "thinking").Exists() {
@@ -1183,7 +1264,7 @@ func reconcileClaudeCodeFableModelAfterPayload(
 		return body
 	}
 
-	if isClaudeOpus55Model(currentModel) && !gjson.GetBytes(body, "fallbacks").Exists() && !payloadTouchedFallbacks {
+	if refusalFallback && isClaudeOpus55Model(currentModel) && !gjson.GetBytes(body, "fallbacks").Exists() && !payloadTouchedFallbacks {
 		body, _ = sjson.SetRawBytes(body, "fallbacks", []byte(`[{"model":"claude-opus-4-8"}]`))
 	}
 	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
@@ -1632,15 +1713,14 @@ func applyCloakingInternal(
 		turnOriginArgs...,
 	)
 
-	// In native Claude Code 2.1.258, claude-fable-5-1 requests carry:
-	// "fallbacks": [{"model": "claude-opus-5"}]
-	model := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "model").String()))
-	if isClaudeOpus55Model(model) && !isProbeOrHelper && !gjson.GetBytes(payload, "fallbacks").Exists() {
-		payload, _ = sjson.SetRawBytes(payload, "fallbacks", []byte(`[{"model":"claude-opus-4-8"}]`))
-	}
-	if isClaudeFable51Model(model) && !isProbeOrHelper {
-		if !gjson.GetBytes(payload, "fallbacks").Exists() {
-			payload, _ = sjson.SetRawBytes(payload, "fallbacks", []byte(`[{"model":"claude-opus-5"}]`))
+	// Claude Code can ask for a server-side refusal fallback ("fallbacks":
+	// [{"model":"claude-opus-4-8"}] on opus-5-5, claude-opus-5 on fable-5-1).
+	// The cloak adds it only when claude-cloak-refusal-fallback is on; caller
+	// fallbacks are never touched. The fallback betas follow from the body.
+	if claudeCloakRefusalFallbackEnabled(cfg) && !isProbeOrHelper && !gjson.GetBytes(payload, "fallbacks").Exists() {
+		model := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "model").String()))
+		if fallback := claudeCloakRefusalFallbackModel(model); fallback != "" {
+			payload, _ = sjson.SetRawBytes(payload, "fallbacks", []byte(`[{"model":"`+fallback+`"}]`))
 		}
 	}
 	if !isProbeOrHelper {

@@ -21,7 +21,7 @@ const nativePassthroughCallerUserID = `{"device_id":"ccccccccccccccccccccccccccc
 
 func nativePassthroughHeaders() http.Header {
 	return http.Header{
-		"User-Agent":                  {"claude-cli/2.1.280 (external, cli)"},
+		"User-Agent":                  {"claude-cli/2.1.325 (external, cli)"},
 		"X-App":                       {"cli"},
 		"Anthropic-Beta":              {"dangerous-tool-use-2026-09-03,caller-open-list-beta"},
 		"Anthropic-Version":           {"2023-06-01"},
@@ -58,7 +58,7 @@ func nativePassthroughOAuthAuth(baseURL string) *cliproxyauth.Auth {
 
 func assertNativePassthroughOAuthRequest(t *testing.T, body []byte, headers http.Header, wantStream bool) {
 	t.Helper()
-	if got := headers.Get("User-Agent"); got != "claude-cli/2.1.280 (external, cli)" {
+	if got := headers.Get("User-Agent"); got != "claude-cli/2.1.325 (external, cli)" {
 		t.Fatalf("User-Agent = %q, want caller version", got)
 	}
 	if got := headers.Get("X-Stainless-Package-Version"); got != "0.999.0" {
@@ -383,7 +383,7 @@ func TestClaudeExecutorNativePassthroughDisabledUsesExistingPipeline(t *testing.
 	if errExecute != nil {
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
-	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.280 (external, cli)" {
+	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.325 (external, cli)" {
 		t.Fatalf("disabled passthrough User-Agent = %q, want baseline profile", got)
 	}
 }

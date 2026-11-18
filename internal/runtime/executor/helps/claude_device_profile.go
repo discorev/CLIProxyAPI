@@ -20,9 +20,9 @@ import (
 )
 
 const (
-	defaultClaudeFingerprintUserAgent      = "claude-cli/2.1.280 (external, cli)"
-	defaultClaudeFingerprintPackageVersion = "0.112.1"
-	defaultClaudeFingerprintRuntimeVersion = "v26.3.0"
+	defaultClaudeFingerprintUserAgent      = "claude-cli/2.1.325 (external, cli)"
+	defaultClaudeFingerprintPackageVersion = "0.128.0"
+	defaultClaudeFingerprintRuntimeVersion = "v26.12.1"
 	defaultClaudeFingerprintOS             = "MacOS"
 	defaultClaudeFingerprintArch           = "arm64"
 	claudeDeviceProfileTTL                 = 7 * 24 * time.Hour
@@ -58,6 +58,13 @@ type claudeCLIVersion struct {
 	minor int
 	patch int
 }
+
+// minimumNativeClaudeCodeVersion is the oldest Claude Code release still
+// recognised as a native client (confirmed detection and native passthrough).
+// It is deliberately separate from the impersonated baseline above: bumping the
+// cloak to a newer release must not demote clients that have not auto-updated
+// yet to the cloaked path.
+var minimumNativeClaudeCodeVersion = claudeCLIVersion{major: 2, minor: 1, patch: 280}
 
 func (v claudeCLIVersion) Compare(other claudeCLIVersion) int {
 	switch {
@@ -588,14 +595,14 @@ func ApplyClaudeDeviceProfileHeaders(r *http.Request, profile ClaudeDeviceProfil
 	r.Header.Set("X-Stainless-Arch", profile.Arch)
 }
 
-// DefaultClaudeVersion returns the version string (e.g. "2.1.280") from the
+// DefaultClaudeVersion returns the version string (e.g. "2.1.325") from the
 // current baseline device profile. It extracts the version from the User-Agent.
 func DefaultClaudeVersion(cfg *config.Config) string {
 	profile := defaultClaudeDeviceProfile(cfg)
 	if version, ok := parseClaudeCLIVersion(profile.UserAgent); ok {
 		return strconv.Itoa(version.major) + "." + strconv.Itoa(version.minor) + "." + strconv.Itoa(version.patch)
 	}
-	return "2.1.280"
+	return "2.1.325"
 }
 
 func ApplyClaudeDefaultDeviceProfileHeaders(r *http.Request, cfg *config.Config) {

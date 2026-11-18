@@ -38,7 +38,7 @@ func TestSubscriptionResetExecutorHTTP(t *testing.T) {
 						t.Errorf("wrong body: %+v", body)
 					}
 				} else {
-					if r.URL.Path != "/api/organizations/"+org+"/reset_rate_limits" || r.Header.Get("User-Agent") != "claude-cli/2.1.280 (external, cli)" || r.Header.Get("Anthropic-Beta") != "oauth-2025-04-20" {
+					if r.URL.Path != "/api/organizations/"+org+"/reset_rate_limits" || r.Header.Get("User-Agent") != "claude-cli/2.1.325 (external, cli)" || r.Header.Get("Anthropic-Beta") != "oauth-2025-04-20" {
 						t.Errorf("wrong claude request: %s %v", r.URL, r.Header)
 					}
 					if body["program"] != "cedar_ember" || body["grant_id"] != "grant-1" || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`).MatchString(body["request_id"]) || len(body) != 3 {
